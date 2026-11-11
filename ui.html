@@ -1,0 +1,1130 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; width: 100%; overflow: hidden; overflow: clip; }
+  body {
+    font: 11px/16px Inter, system-ui, -apple-system, sans-serif;
+    background: var(--figma-color-bg);
+    color: var(--figma-color-text);
+    display: flex; flex-direction: column;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    -webkit-font-smoothing: antialiased;
+  }
+  main, section, nav, footer { min-width: 0; max-width: 100%; }
+  button { font: inherit; color: inherit; }
+  svg { display: block; flex: none; }
+  .muted { color: var(--figma-color-text-secondary); }
+  .faint { color: var(--figma-color-text-tertiary); }
+  .err { color: var(--figma-color-text-danger); }
+  .warn { color: var(--figma-color-text-warning); }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ---------- source ---------- */
+  .src { padding: 12px 16px 12px; border-bottom: 1px solid var(--figma-color-border); }
+  .brand-mark { flex: none; width: 28px; height: 28px; border-radius: 7px; }
+  .src-row { display: flex; gap: 8px; }
+  .field {
+    flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--figma-color-border); border-radius: 4px;
+    background: var(--figma-color-bg); color: var(--figma-color-text); font: inherit; outline: none;
+  }
+  .field:hover { border-color: var(--figma-color-border-strong); }
+  .field:focus { border-color: var(--figma-color-border-selected); box-shadow: inset 0 0 0 1px var(--figma-color-border-selected); }
+  .src-meta { display: flex; align-items: center; gap: 6px; margin-top: 8px; min-height: 16px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--figma-color-icon-tertiary); flex: none; }
+  .dot.ok { background: var(--figma-color-icon-success); }
+  .dot.bad { background: var(--figma-color-icon-danger); }
+  .link { border: 0; background: none; padding: 0; cursor: pointer; color: var(--figma-color-text-brand); }
+  .link:hover { text-decoration: underline; }
+  .spacer { flex: 1; }
+
+  /* ---------- steps ---------- */
+  .steps { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr); border-bottom: 1px solid var(--figma-color-border); }
+  .step {
+    display: flex; flex-direction: column; gap: 2px; align-items: flex-start; min-width: 0; padding: 10px 8px 9px;
+    border: 0; border-bottom: 2px solid transparent; background: none; text-align: left; cursor: pointer;
+  }
+  .step + .step { border-left: 1px solid var(--figma-color-border); }
+  .step:hover { background: var(--figma-color-bg-hover); }
+  .step .t { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; color: var(--figma-color-text-secondary); font-weight: 500; }
+  .step .t > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .step .s { max-width: 100%; color: var(--figma-color-text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .step.on { border-bottom-color: var(--figma-color-text); }
+  .step.on .t { color: var(--figma-color-text); font-weight: 600; }
+  .badge-n {
+    flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--figma-color-border-strong);
+    display: grid; place-items: center; font-size: 9px; line-height: 1; font-weight: 600; color: var(--figma-color-text-secondary);
+  }
+  .step.done .badge-n { border-color: var(--figma-color-bg-success); background: var(--figma-color-bg-success); color: var(--figma-color-text-onsuccess); }
+
+  /* ---------- panels ---------- */
+  main { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+  .src, .steps, footer { flex: none; }
+  .panel { display: none; }
+  .panel.on { display: block; }
+  .sec { padding: 12px 16px; border-bottom: 1px solid var(--figma-color-border); }
+  .sec:last-child { border-bottom: 0; }
+  .sec-h { display: flex; align-items: center; justify-content: space-between; margin: 0 0 4px; font-weight: 600; }
+  .sec-h .muted { font-weight: 400; }
+
+  /* property row: [check] label .... count */
+  .rows { margin: 0 -8px; }
+  .row {
+    display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 32px; padding: 6px 8px;
+    border-radius: 4px; cursor: pointer;
+  }
+  .row:hover { background: var(--figma-color-bg-hover); }
+  .row.static { cursor: default; grid-template-columns: minmax(0, 1fr) auto; }
+  .row.static:hover { background: none; }
+  .row .name { font-weight: 500; }
+  .row .sub { color: var(--figma-color-text-secondary); }
+  .row .end { color: var(--figma-color-text-secondary); text-align: right; white-space: nowrap; }
+  .row.off .name, .row.off .end { color: var(--figma-color-text-tertiary); }
+  input[type=checkbox] { appearance: none; margin: 0; width: 16px; height: 16px; border: 1px solid var(--figma-color-border-strong); border-radius: 3px; display: grid; place-items: center; cursor: pointer; background: var(--figma-color-bg); }
+  input[type=checkbox]:checked { background: var(--figma-color-bg-brand); border-color: var(--figma-color-bg-brand); }
+  input[type=checkbox]:checked::after { content: ''; width: 8px; height: 4px; border-left: 1.5px solid var(--figma-color-icon-onbrand); border-bottom: 1.5px solid var(--figma-color-icon-onbrand); transform: translateY(-1px) rotate(-45deg); }
+  input[type=checkbox]:disabled { opacity: .4; cursor: default; }
+
+  .inline { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; align-items: center; }
+
+  /* ---------- build progress ---------- */
+  .bp { border: 1px solid var(--figma-color-border); border-radius: 6px; overflow: hidden; }
+  .bp-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; padding: 12px 12px 10px; }
+  .bp-kicker { color: var(--figma-color-text-tertiary); }
+  .bp-title { font-size: 12px; line-height: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-pct { font-size: 20px; line-height: 24px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  .bp-meta { display: flex; justify-content: space-between; padding: 6px 12px 10px; color: var(--figma-color-text-tertiary); font-variant-numeric: tabular-nums; }
+  .bp-track { position: relative; height: 4px; margin: 0 12px; border-radius: 2px; background: var(--figma-color-bg-tertiary); overflow: hidden; }
+  .bp-fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 2px; background: var(--figma-color-text); transition: width .25s ease; }
+  .bp.run .bp-fill::after {
+    content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent);
+    background-size: 60px 100%; background-repeat: no-repeat; animation: bp-shine 1.1s linear infinite;
+  }
+  @keyframes bp-shine { from { background-position: -60px 0; } to { background-position: calc(100% + 60px) 0; } }
+  .bp-list { list-style: none; margin: 0; padding: 4px 0; border-top: 1px solid var(--figma-color-border); }
+  .bp-list li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 5px 12px; color: var(--figma-color-text-tertiary); }
+  .bp-list li.now { color: var(--figma-color-text); background: var(--figma-color-bg-secondary); }
+  .bp-list li.done { color: var(--figma-color-text-secondary); }
+  .bp-list .num { font-variant-numeric: tabular-nums; }
+  .bp-list .st { width: 16px; height: 16px; display: grid; place-items: center; }
+  .bp-list .st i { width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--figma-color-icon-tertiary); }
+  .bp-list .page { padding-top: 9px; color: var(--figma-color-text-tertiary); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; display: block; }
+  .bp-list .page:first-child { padding-top: 5px; }
+  .bp.fail { border-color: var(--figma-color-border-danger, var(--figma-color-border)); }
+  @media (prefers-reduced-motion: reduce) { .bp.run .bp-fill::after { animation: none; } .bp-fill { transition: none; } }
+
+  /* ---------- blocking overlay while building ---------- */
+  .ov { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; padding: 16px;
+    background: rgba(0, 0, 0, .55); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: ov-in .16s ease both; }
+  .ov[hidden] { display: none; }
+  .ov-card { width: 100%; max-height: 100%; display: flex; flex-direction: column; min-height: 0;
+    background: var(--figma-color-bg); border: 1px solid var(--figma-color-border); border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .35); overflow: hidden; animation: ov-up .2s ease both; }
+  .ov-card .bp { border: 0; border-radius: 0; display: flex; flex-direction: column; min-height: 0; flex: 1; }
+  .ov-card .bp-list { flex: 1; min-height: 0; overflow: auto; }
+  .ov-foot { display: flex; align-items: center; gap: 8px; padding: 12px; border-top: 1px solid var(--figma-color-border); }
+  .ov-foot .muted { flex: 1; min-width: 0; }
+  .ov-notes { padding: 10px 12px 0; display: grid; gap: 4px; max-height: 96px; overflow: auto; border-top: 1px solid var(--figma-color-border); }
+  .ov-notes:empty { display: none; }
+  @keyframes ov-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes ov-up { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .ov, .ov-card { animation: none; } }
+
+  /* ---------- custom checkbox ---------- */
+  .sr { position: absolute; top: 0; left: 0; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .ck {
+    width: 16px; height: 16px; border-radius: 4px; flex: none; display: grid; place-items: center;
+    border: 1.5px solid var(--figma-color-border-strong); background: transparent;
+    transition: background-color .14s ease, border-color .14s ease, transform .1s ease;
+  }
+  .ck svg { width: 10px; height: 10px; overflow: visible; }
+  .ck path { fill: none; stroke: var(--figma-color-bg); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+    stroke-dasharray: 14; stroke-dashoffset: 14; transition: stroke-dashoffset .18s ease .04s; }
+  .pg:hover .ck { border-color: var(--figma-color-text-secondary); }
+  .pg:active .ck { transform: scale(.92); }
+  .sr:checked + .ck { background: var(--figma-color-text); border-color: var(--figma-color-text); }
+  .sr:checked + .ck path { stroke-dashoffset: 0; }
+  .sr:focus-visible + .ck { box-shadow: 0 0 0 2px var(--figma-color-bg), 0 0 0 4px var(--figma-color-border-selected); }
+  .pg.off-disabled { opacity: .5; cursor: default; }
+  @media (prefers-reduced-motion: reduce) { .ck, .ck path { transition: none; } }
+
+  /* ---------- component pages: one card per page ---------- */
+  #cmpRows, #scrRows, .cards { display: grid; gap: 8px; margin-top: 8px; }
+  .pg-head { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; }
+  .pg-sets:empty { display: none; }
+  .pg {
+    position: relative;
+    display: block; min-width: 0; border: 1px solid var(--figma-color-border); border-radius: 6px;
+    background: var(--figma-color-bg); cursor: pointer; transition: background-color .12s ease, border-color .12s ease;
+  }
+  .pg:hover { border-color: var(--figma-color-border-strong); }
+  .pg.on { background: var(--figma-color-bg-secondary); }
+  .pg-head { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; }
+  .pg-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .pg-name { font-size: 12px; line-height: 16px; font-weight: 600; color: var(--figma-color-text); }
+  .pg:not(.on) .pg-name { color: var(--figma-color-text-secondary); font-weight: 500; }
+  .pg-status { display: flex; align-items: center; gap: 6px; color: var(--figma-color-text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pg-status i { width: 6px; height: 6px; border-radius: 50%; flex: none; border: 1px solid var(--figma-color-icon-tertiary); }
+  .pg-status.ok { color: var(--figma-color-text-secondary); }
+  .pg-status.ok i { border: 0; background: var(--figma-color-icon-success); }
+  .pg-status.part i { border: 0; background: var(--figma-color-icon-warning); }
+  .pg-total { display: flex; flex-direction: column; align-items: flex-end; line-height: 14px; }
+  .pg-total .num { font-size: 12px; line-height: 16px; font-weight: 600; color: var(--figma-color-text); }
+  .pg-total span:last-child { color: var(--figma-color-text-tertiary); }
+  .pg:not(.on) .pg-total .num { color: var(--figma-color-text-secondary); font-weight: 500; }
+  .pg-sets { list-style: none; margin: 0; padding: 6px 12px 8px 38px; border-top: 1px solid var(--figma-color-border); display: grid; gap: 0; }
+  .pg-sets li { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; color: var(--figma-color-text-secondary); }
+  .pg-sets li .num { color: var(--figma-color-text-tertiary); }
+  .pg-sets li.got span:first-child::after { content: ''; display: inline-block; width: 4px; height: 4px; margin-left: 6px; vertical-align: middle; border-radius: 50%; background: var(--figma-color-icon-success); }
+  .pg-sets[hidden] { display: none; }
+  /* screen cards: the parts count is the show/hide button for the list under it */
+  .pg-toggle { border: 0; background: none; padding: 2px 0 2px 6px; margin: -2px 0; cursor: pointer; font: inherit; color: inherit; border-radius: 4px; }
+  .pg-toggle span:last-child { display: inline-flex; align-items: center; gap: 2px; }
+  .pg-toggle svg { width: 12px; height: 12px; transition: transform .15s; }
+  .pg-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+  .pg-toggle:hover span:last-child { color: var(--figma-color-text-secondary); }
+  .pg-toggle:focus-visible { outline: 2px solid var(--figma-color-border-selected); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { .pg-toggle svg { transition: none; } }
+  .pg:not(.on) .pg-sets li, .pg:not(.on) .pg-sets li .num { color: var(--figma-color-text-tertiary); }
+  .note { margin: 6px 0 0; color: var(--figma-color-text-secondary); }
+  .tag-built { color: var(--figma-color-text-success); }
+
+  details { margin-top: 2px; }
+  summary { list-style: none; display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 4px 0; color: var(--figma-color-text-secondary); font-weight: 500; }
+  summary::-webkit-details-marker { display: none; }
+  summary:hover { color: var(--figma-color-text); }
+  details[open] > summary svg { transform: rotate(90deg); }
+  textarea.field { height: 160px; padding: 8px; resize: vertical; font: 10px/15px "SF Mono", Menlo, monospace; display: block; width: 100%; margin-top: 6px; }
+  .skip { padding: 6px 0; border-top: 1px solid var(--figma-color-border); }
+  .skip:first-child { border-top: 0; }
+  .skip code { font: 10px/15px "SF Mono", Menlo, monospace; }
+
+  .callout { display: flex; gap: 8px; padding: 8px 10px; border-radius: 4px; background: var(--figma-color-bg-secondary); color: var(--figma-color-text-secondary); }
+  .callout svg { margin-top: 1px; color: var(--figma-color-icon-secondary); }
+  .callout.warn { background: var(--figma-color-bg-warning-tertiary); color: var(--figma-color-text); }
+  .callout.warn svg { color: var(--figma-color-icon-warning); }
+
+  .result { display: grid; gap: 4px; }
+  .sy-intro { margin: 0 0 8px; }
+  .sy-act { margin-top: 8px; }
+  .sy-list { margin: 8px 0; border-top: 1px solid var(--figma-color-border); }
+  .sy-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--figma-color-border); }
+  .sy-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sy-v { display: flex; align-items: center; gap: 4px; }
+  .sy-sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .15); }
+  .result-line { display: flex; gap: 6px; align-items: flex-start; }
+  .result-line svg { margin-top: 1px; }
+  .ok-i { color: var(--figma-color-icon-success); }
+  .bad-i { color: var(--figma-color-icon-danger); }
+  .info-i { color: var(--figma-color-icon-secondary); }
+
+  .bar { height: 4px; border-radius: 2px; background: var(--figma-color-bg-tertiary); overflow: hidden; margin-top: 8px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--figma-color-bg-brand); transition: width .2s ease; }
+
+  /* ---------- footer ---------- */
+  footer { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--figma-color-border); }
+  .foot-msg { flex: 1; min-width: 0; color: var(--figma-color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .btn {
+    height: 32px; padding: 0 12px; border-radius: 6px; font-weight: 500; cursor: pointer; white-space: nowrap;
+    border: 1px solid var(--figma-color-border); background: var(--figma-color-bg); color: var(--figma-color-text);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { background: var(--figma-color-bg-hover); }
+  .btn.pri { border-color: transparent; background: var(--figma-color-bg-brand); color: var(--figma-color-text-onbrand); }
+  .btn.pri:hover { background: var(--figma-color-bg-brand-hover); }
+  .btn.sm { height: 28px; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .spin { animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } .bar i { transition: none; } }
+</style>
+</head>
+<body>
+
+<!-- line icons (16px, 1.5 stroke) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+  <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.25v4M8 4.75v.01" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.46-3.54M13 3v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-spin" viewBox="0 0 16 16"><path d="M8 2.5a5.5 5.5 0 1 0 5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+</svg>
+
+<section class="src">
+  <div class="src-row">
+    <svg class="brand-mark" width="28" height="28" viewBox="0 0 500 500" aria-hidden="true"><rect width="500" height="500" rx="112" fill="#5C00E6"/><path fill="#fff" d="M373.839 126.161C376.504 128.826 378.001 132.44 378.001 136.209C378.001 139.978 376.504 143.592 373.839 146.257L349.999 170.097C361.103 183.995 369.223 200.098 373.78 217.402C379.569 239.381 379.4 262.505 373.292 284.398C367.184 306.291 355.356 326.162 339.025 341.97C326.204 354.38 310.97 363.935 294.33 370.078C286.762 372.872 278.817 367.992 276.904 360.156C274.99 352.319 279.851 344.514 287.32 341.467C298.953 336.72 309.617 329.781 318.708 320.98C331.312 308.78 340.44 293.444 345.154 276.547C349.868 259.651 349.998 241.805 345.531 224.841C342.294 212.547 336.726 201.039 329.176 190.921L146.436 373.66C145.125 375.018 143.557 376.101 141.823 376.845C140.089 377.59 138.224 377.982 136.337 377.999C134.45 378.015 132.578 377.656 130.831 376.941C129.085 376.226 127.498 375.171 126.163 373.836C124.829 372.502 123.774 370.915 123.059 369.168C122.344 367.422 121.985 365.55 122.001 363.663C122.018 361.776 122.41 359.911 123.155 358.177C123.899 356.443 124.982 354.875 126.34 353.564L309.079 170.824C298.871 163.207 287.249 157.608 274.835 154.384C257.857 149.974 240.011 150.165 223.13 154.936C206.25 159.707 190.945 168.887 178.787 181.533C170.018 190.654 163.114 201.341 158.408 212.99C155.385 220.469 147.597 225.357 139.754 223.469C131.911 221.582 127.004 213.654 129.772 206.077C135.859 189.416 145.362 174.15 157.729 161.286C173.482 144.902 193.313 133.007 215.185 126.825C237.056 120.643 260.18 120.396 282.179 126.11C299.639 130.645 315.891 138.805 329.902 150.001L353.743 126.161C356.408 123.496 360.022 121.999 363.791 121.999C367.56 121.999 371.174 123.496 373.839 126.161Z"/></svg>
+    <input class="field" type="text" id="url" spellcheck="false" value="https://stat.chara.id/swing/ds/tokens.css" placeholder="https://stat.chara.id/swing/ds/tokens.css" aria-label="Source URL">
+    <button class="btn sm" id="fetch"><svg width="16" height="16"><use href="#i-refresh"/></svg>Fetch</button>
+  </div>
+  <div class="src-meta"><span class="dot" id="srcDot"></span><span class="muted" id="srcMsg">Fetch your tokens.css, or paste it under Tokens.</span></div>
+</section>
+
+<nav class="steps" role="tablist">
+  <button class="step on" data-step="tokens" role="tab"><span class="t"><span class="badge-n" id="n1">1</span><span class="lbl">Tokens</span></span><span class="s" id="s1">Not imported</span></button>
+  <button class="step" data-step="icons" role="tab"><span class="t"><span class="badge-n" id="n2">2</span><span class="lbl">Icons</span></span><span class="s" id="s2">Not imported</span></button>
+  <button class="step" data-step="components" role="tab"><span class="t"><span class="badge-n" id="n3">3</span><span class="lbl">Components</span></span><span class="s" id="s3">Not built</span></button>
+  <button class="step" data-step="screens" role="tab"><span class="t"><span class="badge-n" id="n4">4</span><span class="lbl">Screens</span></span><span class="s" id="s4">Not built</span></button>
+</nav>
+
+<main>
+  <!-- 1 TOKENS -->
+  <div class="panel on" id="p-tokens">
+    <div class="sec">
+      <div class="inline"><label class="muted" for="col">Collection</label><input class="field" type="text" id="col" value="Tokens"></div>
+    </div>
+    <div class="sec">
+      <div class="sec-h">Create <span class="muted num" id="tokTotal"></span></div>
+      <div class="cards" id="tokRows"></div>
+      <p class="note" id="tokNote"></p>
+      <div id="skipBox"></div>
+    </div>
+    <div class="sec">
+      <details id="cssBox">
+        <summary><svg width="16" height="16"><use href="#i-chev"/></svg>CSS source <span class="faint num" id="cssLen"></span></summary>
+        <textarea class="field" id="css" spellcheck="false" placeholder=":root {&#10;  --purple-500: #5C00E6;&#10;  --color-primary: var(--purple-500);&#10;}"></textarea>
+      </details>
+    </div>
+    <div class="sec" id="tokOut" hidden></div>
+    <div class="sec" id="syncSec">
+      <div class="sec-h">Send to web <span class="muted">Figma → tokens.css</span></div>
+      <p class="note sy-intro">Changed a variable in this file? Compare it with the live tokens.css and update the web in one click. Every update is backed up and can be undone on the DS sync page.</p>
+      <div class="inline"><label class="muted" for="syncKey">Access key</label><input class="field" type="password" id="syncKey" placeholder="sds_…" autocomplete="off" spellcheck="false"></div>
+      <div class="sy-act"><button class="btn sm" id="syncCheck">Check changes</button></div>
+      <div id="syncOut"></div>
+    </div>
+  </div>
+
+  <!-- 2 ICONS -->
+  <div class="panel" id="p-icons">
+    <div class="sec">
+      <div class="sec-h">Sets <span class="muted">from icons/index.json</span></div>
+      <div class="cards" id="icRows"></div>
+      <p class="note">Each SVG becomes a component on the Icons page, coloured by Color/Semantic/Text/default. Icons already in the file are skipped.</p>
+    </div>
+    <div class="sec" id="icOut" hidden></div>
+  </div>
+
+  <!-- 3 COMPONENTS -->
+  <div class="panel" id="p-components">
+    <div class="sec" id="cmpWarn" hidden></div>
+    <div class="sec">
+      <div class="sec-h">Pages <button class="link" id="cmpAll">Select all</button></div>
+      <div id="cmpRows"></div>
+      <p class="note">Each page gets its component sets and a labelled artboard. Instances already in your designs stay linked.</p>
+    </div>
+    <div class="sec" id="cmpOut" hidden></div>
+    <div class="sec" id="libSec" hidden>
+      <div class="sec-h">Library <button class="link" id="libExport">Export library keys</button></div>
+      <p class="note" id="libMsg">Publish this file as a library, then export the keys. In a file that has the library added, the plugin builds screens from it.</p>
+    </div>
+  </div>
+
+  <!-- 4 SCREENS -->
+  <div class="panel" id="p-screens">
+    <div class="sec" id="scrWarn" hidden></div>
+    <div class="sec">
+      <div class="sec-h">Screens <span class="muted">from swing/ref</span></div>
+      <div id="scrRows"></div>
+      <p class="note">Each screen gets its own page: the frame on the left, the parts it uses listed on the right. Its UI components are built (or updated) with it as main components of this file, each on its own page. The frame is redrawn on every build, so edit the parts, not the frame.</p>
+    </div>
+    <div class="sec" id="scrOut" hidden></div>
+  </div>
+</main>
+
+<footer>
+  <span class="foot-msg" id="footMsg"></span>
+  <button class="btn pri" id="primary">Import tokens</button>
+</footer>
+
+<div class="ov" id="overlay" hidden role="dialog" aria-modal="true" aria-label="Building components">
+  <div class="ov-card" id="ovBody"></div>
+</div>
+
+<script>
+  var $ = function (id) { return document.getElementById(id); };
+  function send(msg) { parent.postMessage({ pluginMessage: msg }, '*'); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function n(x) { return Number(x || 0).toLocaleString('en-US'); }
+  function ic(id, cls) { return '<svg width="16" height="16" class="' + (cls || '') + '"><use href="#i-' + id + '"/></svg>'; }
+
+  // One selectable card. o = { key, on, title, status: [kind, text] (kind ok|part|''), total: [number, label], items: [[name, count, got]] }
+  var CHECK = '<span class="ck"><svg viewBox="0 0 10 10"><path d="M1.5 5.2l2.3 2.3 4.7-5"/></svg></span>';
+  function card(o) {
+    var items = (o.items || []).map(function (it) {
+      return '<li' + (it[2] ? ' class="got"' : '') + '><span>' + esc(it[0]) + '</span><span class="num">' + (typeof it[1] === 'number' ? n(it[1]) : esc(it[1])) + '</span></li>';
+    }).join('');
+    return '<label class="pg' + (o.on ? ' on' : '') + '">' +
+      '<div class="pg-head"><input class="sr" type="checkbox" data-k="' + esc(o.key) + '"' + (o.on ? ' checked' : '') + '>' + CHECK +
+        '<div class="pg-title"><span class="pg-name">' + esc(o.title) + '</span>' +
+          (o.status ? '<span class="pg-status ' + (o.status[0] || '') + '"><i></i>' + esc(o.status[1]) + '</span>' : '') + '</div>' +
+        (o.toggle
+          ? '<button type="button" class="pg-total pg-toggle" data-tog="' + esc(o.key) + '" aria-expanded="' + (o.open ? 'true' : 'false') + '" aria-label="' + (o.open ? 'Hide' : 'Show') + ' the ' + esc(o.total[1]) + '">' +
+            '<span class="num">' + n(o.total[0]) + '</span><span>' + esc(o.total[1]) + '<svg viewBox="0 0 16 16"><use href="#i-chev"/></svg></span></button></div>'
+          : '<div class="pg-total"><span class="num">' + (o.total[0] == null ? '–' : n(o.total[0])) + '</span><span>' + esc(o.total[1]) + '</span></div></div>') +
+      '<ul class="pg-sets"' + (o.toggle && !o.open ? ' hidden' : '') + '>' + items + '</ul></label>';
+  }
+  function wireCards(box, onToggle) {
+    box.querySelectorAll('input.sr').forEach(function (c) { c.onchange = function () { onToggle(c.getAttribute('data-k'), c.checked); }; });
+  }
+
+  var COMPONENT_PAGES = [
+    { key: 'Color', sets: [['Color', 1]], variants: 0, label: 'colour swatches + gradients', needs: [] },
+    { key: 'Typography', sets: [['Typography', 1]], variants: 0, label: 'text style specimens', needs: [] },
+    { key: 'Button', sets: [['Button', 288], ['IconButton', 210], ['SlideConfirm', 8], ['SwingLoader', 4]], variants: 510, needs: ['chevron-left', 'chevron-right', 'share', 'right-lg'] },
+    { key: 'Badge', sets: [['Badge', 48], ['Counter', 12], ['Indicator', 2]], variants: 62, needs: ['clock'] },
+    { key: 'Tag', sets: [['Tag', 68]], variants: 68, needs: ['golf', 'chevron-down', 'close-sm'] },
+    { key: 'Checkbox', sets: [['Checkbox', 10]], variants: 10, needs: ['checkmark'] },
+    { key: 'Radio', sets: [['Radio', 7]], variants: 7, needs: [] },
+    { key: 'Switch', sets: [['Switch', 6]], variants: 6, needs: [] },
+    { key: 'Check', sets: [['Check', 16]], variants: 16, needs: [] },
+    { key: 'TextField', sets: [['TextField', 46]], variants: 46, needs: ['mail', 'close-circle', 'info', 'search', 'eye', 'chevron-down'] },
+    { key: 'Select', sets: [['Select', 8], ['Option', 4]], variants: 12, needs: ['chevron-down', 'gps'] },
+    { key: 'Menu', sets: [['MenuItem', 6], ['Menu', 2]], variants: 8, needs: ['pencil'] },
+    { key: 'List', sets: [['ListItem', 40], ['List', 3]], variants: 43, needs: ['settings', 'chevron-right', 'user', 'golf', 'logout'] },
+    { key: 'Tabs', sets: [['Tab', 4], ['Tabs', 4]], variants: 8, needs: ['golf'] },
+    { key: 'Divider', sets: [['Divider', 7]], variants: 7, needs: [] },
+    { key: 'Avatar', sets: [['Avatar', 12], ['AvatarGroup', 3]], variants: 15, needs: ['user'] },
+    { key: 'Caption', sets: [['Caption', 8]], variants: 8, needs: ['info', 'warning-circle', 'tick-circle'] },
+    { key: 'Pagination', sets: [['Dot', 4], ['Dots', 4], ['DotsCount', 1], ['Segment', 6], ['Segments', 2]], variants: 17, needs: [] },
+    { key: 'Rating', sets: [['Star', 6], ['Stars', 22], ['Rating', 1], ['Rate', 24]], variants: 53, needs: ['stars'] },
+    { key: 'Stepper', sets: [['Stepper', 5]], variants: 5, needs: ['minus-lg', 'add-lg'] },
+    { key: 'Pin', sets: [['PinCell', 15], ['Pin', 8]], variants: 23, needs: ['info', 'warning-circle'] },
+    { key: 'Slider', sets: [['Slider', 6]], variants: 6, needs: [] },
+    { key: 'Toaster', sets: [['Toaster', 5]], variants: 5, needs: ['info', 'warning-circle', 'tick-circle', 'close-sm', 'chevron-right'] },
+    { key: 'Tooltip', sets: [['Tooltip', 8], ['MapPin', 2]], variants: 10, needs: ['close-sm'] },
+    { key: 'Steps', sets: [['Step', 6], ['Steps', 1]], variants: 7, needs: ['checkmark'] },
+    { key: 'Review', sets: [['Review', 2], ['Comment', 1], ['ChatRow', 2]], variants: 5, needs: ['stars'] },
+    { key: 'BottomNav', sets: [['BottomNavItem', 5], ['BottomNav', 3]], variants: 8, needs: ['home', 'compass', 'chat-circle', 'user', 'add-lg'] },
+    { key: 'AppBar', sets: [['Brand', 2], ['AppBar', 22]], variants: 24, needs: ['chevron-left', 'share', 'search', 'more-h', 'notification-bell', 'chevron-down'] },
+    { key: 'Card', sets: [['Media', 16], ['Card', 4], ['Stat', 2]], variants: 22, needs: ['image', 'stars'] },
+    { key: 'ActionCard', sets: [['ActionCard', 24]], variants: 24, needs: ['golf', 'chevron-right'] },
+    { key: 'CourseCard', sets: [['CourseCard', 4], ['CardRail', 1], ['Carousel', 1]], variants: 6, needs: ['bookmark', 'stars', 'price-tag', 'clock'] },
+    { key: 'Sheet', sets: [['SheetHead', 4], ['ShareApp', 1], ['Sheet', 5]], variants: 10, needs: ['close-sm', 'chevron-left', 'trash', 'info', 'search', 'link', 'br-whatsapp', 'br-instagram', 'more-h'] },
+    { key: 'Search', sets: [['SearchRow', 4], ['SearchBar', 2], ['SearchPanel', 2]], variants: 8, needs: ['clock', 'search'] },
+    { key: 'DatePicker', sets: [['CalDay', 10], ['Calendar', 1], ['DateStripDay', 3], ['DateStrip', 1]], variants: 15, needs: ['chevron-left', 'chevron-right', 'date'] },
+    { key: 'TimePicker', sets: [['Slot', 6], ['SlotsGroup', 1], ['TimeWheel', 1]], variants: 8, needs: ['sunrise'] },
+    { key: 'SwingPass', sets: [['SwingPass', 2]], variants: 2, needs: [] },
+    { key: 'Accordion', sets: [['Accordion', 4]], variants: 4, needs: ['chevron-down', 'golf'] },
+    // Home V5 parts (components.css) are UI components, not base DS pages: they live in UI_PAGES below
+  ];
+  // UI components: main components of the file they are built in (the UI file), made from base DS atoms.
+  // In a file that uses the base DS as a library, these and the screens are what the plugin builds.
+  var UI_PAGES = [
+    { key: 'PhotoTile', sets: [['PhotoTile', 1]], variants: 1, needs: [] },
+    { key: 'PassUpsell', sets: [['PassUpsell', 1]], variants: 1, needs: [] },
+    { key: 'SectionHead', sets: [['SectionHead', 1]], variants: 1, needs: ['chevron-right'] },
+    { key: 'ProductCard', sets: [['ProductCard', 2]], variants: 2, needs: [] },
+    { key: 'PromoBanner', sets: [['PromoBanner', 1]], variants: 1, needs: ['chevron-right'] },
+    { key: 'HelpCard', sets: [['HelpCard', 1]], variants: 1, needs: ['chevron-right'] },
+    { key: 'LinkCard', sets: [['LinkCard', 1]], variants: 1, needs: ['info', 'chevron-right'] },
+    { key: 'ProfileHead', sets: [['ProfileHead', 1]], variants: 1, needs: ['pencil'] },
+    { key: 'NotifRow', sets: [['NotifRow', 1]], variants: 1, needs: [] },
+    { key: 'CreditCard', sets: [['CreditCard', 1]], variants: 1, needs: [] },
+    { key: 'AdsRow', sets: [['AdsRow', 3]], variants: 3, needs: [] },
+    { key: 'RewardCard', sets: [['RewardCard', 1]], variants: 1, needs: [] },
+    { key: 'AskBox', sets: [['AskBox', 1]], variants: 1, needs: [] },
+    { key: 'MailFoot', sets: [['MailFoot', 2]], variants: 2, needs: [] },
+    { key: 'RefRow', sets: [['RefRow', 2]], variants: 2, needs: [] },
+    { key: 'PayBar', sets: [['PayBar', 1]], variants: 1, needs: [] },
+    { key: 'PriceRow', sets: [['PriceRow', 4]], variants: 4, needs: [] },
+    { key: 'MiniRow', sets: [['MiniRow', 3]], variants: 3, needs: [] },
+    { key: 'PlayerRow', sets: [['PlayerRow', 4]], variants: 4, needs: [] },
+    { key: 'PayType', sets: [['PayType', 2]], variants: 2, needs: [] },
+    { key: 'StatTile', sets: [['StatTile', 1]], variants: 1, needs: [] },
+    { key: 'Amenity', sets: [['Amenity', 1]], variants: 1, needs: [] },
+    { key: 'InclItem', sets: [['InclItem', 1]], variants: 1, needs: [] },
+    { key: 'RateCard', sets: [['RateCard', 1]], variants: 1, needs: [] },
+    { key: 'SessionTab', sets: [['SessionTab', 2]], variants: 2, needs: [] },
+    { key: 'DateBtn', sets: [['DateBtn', 2]], variants: 2, needs: [] },
+    { key: 'BillRow', sets: [['BillRow', 3]], variants: 3, needs: [] },
+    { key: 'ChoiceRow', sets: [['ChoiceRow', 2]], variants: 2, needs: [] },
+    { key: 'Plan', sets: [['Plan', 6]], variants: 6, needs: [] },
+    { key: 'MethodRow', sets: [['MethodRow', 6]], variants: 6, needs: [] },
+    { key: 'NoteBar', sets: [['NoteBar', 3]], variants: 3, needs: [] },
+    { key: 'BrandCard', sets: [['BrandCard', 2]], variants: 2, needs: [] },
+    { key: 'Venue', sets: [['Venue', 2]], variants: 2, needs: [] },
+    { key: 'InfoTile', sets: [['InfoTile', 1]], variants: 1, needs: [] },
+    { key: 'CreditStrip', sets: [['CreditStrip', 1]], variants: 1, needs: [] },
+    { key: 'PromoCard', sets: [['PromoCard', 2]], variants: 2, needs: [] },
+    { key: 'HostCta', sets: [['HostCta', 2]], variants: 2, needs: [] },
+    { key: 'EventCard', sets: [['EventCard', 2]], variants: 2, needs: [] },
+    { key: 'EventsHead', sets: [['EventsHead', 2]], variants: 2, needs: [] },
+    { key: 'Perk', sets: [['Perk', 1]], variants: 1, needs: [] },
+    { key: 'DealCard', sets: [['DealCard', 2]], variants: 2, needs: [] },
+    { key: 'PayMethod', sets: [['PayMethod', 2]], variants: 2, needs: [] },
+    { key: 'SaveCard', sets: [['SaveCard', 2]], variants: 2, needs: [] },
+    { key: 'PassCard', sets: [['PassCard', 2]], variants: 2, needs: [] },
+    { key: 'KvRow', sets: [['KvRow', 2]], variants: 2, needs: [] },
+    { key: 'CodeHero', sets: [['CodeHero', 1]], variants: 1, needs: [] },
+    { key: 'FaqItem', sets: [['FaqItem', 4]], variants: 4, needs: [] },
+    { key: 'StepCard', sets: [['StepCard', 4]], variants: 4, needs: [] },
+    { key: 'StatPanel', sets: [['StatPanel', 2]], variants: 2, needs: [] },
+    { key: 'CodeCard', sets: [['CodeCard', 1]], variants: 1, needs: [] }
+  ];
+  function isUiPart(key) { return UI_PAGES.some(function (p) { return p.key === key; }); }
+  // Screens tab: a ref screen made only of instances, its parts listed beside it (page "Screen / <name>").
+  // parts = [set, DS page]. In a file that uses the DS as a library, screens are the only thing the plugin builds.
+  var SCREEN_PAGES = [
+    { key: 'Home', title: 'Home', src: 'ref/home.html', sets: [['screen:Home', 1]], variants: 0,
+      parts: [['AppBar', 'AppBar'], ['Dot', 'Pagination'], ['PhotoTile', 'PhotoTile'], ['PassUpsell', 'PassUpsell'], ['SectionHead', 'SectionHead'],
+        ['ProductCard', 'ProductCard'], ['PromoBanner', 'PromoBanner'], ['HelpCard', 'HelpCard'], ['LinkCard', 'LinkCard'], ['Button', 'Button'], ['BottomNav', 'BottomNav']],
+      needs: ['chevron-right', 'search', 'chevron-down', 'notification-bell', 'home', 'info', 'partnership', 'chat-circle', 'stars', 'customer-service'] },
+    { key: 'Account', title: 'Account', src: 'ref/account.html', sets: [['screen:Account', 1]], variants: 0,
+      parts: [['ProfileHead', 'ProfileHead'], ['Button', 'Button'], ['PromoBanner', 'PromoBanner'], ['ListItem', 'List'], ['BottomNav', 'BottomNav']],
+      needs: ['pencil', 'chevron-right', 'credit-card', 'notification-bell', 'ticket', 'invoice-paper', 'chat-circle', 'customer-service', 'delete-profile', 'file-tick', 'lock-circle', 'logout-bracket'] },
+    { key: 'Updates', title: 'Updates', src: 'ref/updates.html', sets: [['screen:Updates', 1]], variants: 0,
+      parts: [['AppBar', 'AppBar'], ['Tag', 'Tag'], ['NotifRow', 'NotifRow']],
+      needs: ['chevron-left', 'more-h', 'notification-bell', 'price-tag-rotate-right', 'announcer'] },
+    { key: 'SwingCredits', title: 'Swing Credits', src: 'ref/swing-credits.html', sets: [['screen:Swing Credits', 1]], variants: 0,
+      parts: [['AppBar', 'AppBar'], ['CreditCard', 'CreditCard'], ['AdsRow', 'AdsRow'], ['Button', 'Button'], ['RewardCard', 'RewardCard'], ['AskBox', 'AskBox']],
+      needs: [] },
+    { key: 'CreditsHistory', title: 'Swing Credits history', src: 'ref/swing-credits-history.html', sets: [['screen:Swing Credits history', 1]], variants: 0,
+      parts: [['AppBar', 'AppBar'], ['Tag', 'Tag'], ['AdsRow', 'AdsRow']],
+      needs: [] },
+    { key: 'PersonalInfo', title: 'Personal information', src: 'ref/personal-info.html', sets: [['screen:Personal information', 1]], variants: 0,
+      parts: [['AppBar', 'AppBar'], ['TextField', 'TextField'], ['Select', 'Select'], ['Caption', 'Caption'], ['Button', 'Button']],
+      needs: ['info', 'chevron-down', 'warning-circle'] },
+    { key: 'VerifyEmail', title: 'Verify email (email)', src: 'ref/verify-email.html', sets: [['screen:Verify email', 1]], variants: 0,
+      parts: [['MailFoot', 'MailFoot']],
+      needs: [] },
+    { key: 'ReferEarn', title: 'Refer & earn', src: 'ref/refer-earn.html', sets: [['screen:Refer & earn', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['CodeCard','CodeCard'],['StatPanel','StatPanel'],['Caption','Caption'],['StepCard','StepCard'],['FaqItem','FaqItem'],['Divider','Divider'],['Button','Button']],
+      needs: ['copy','share','chevron-right','chevron-down','share-bracket','user-circle'] },
+    { key: 'IgStory', title: 'IG story', src: 'ref/ig-story.html', sets: [['screen:IG story', 1]], variants: 0,
+      parts: [['CodeHero','CodeHero'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassEmail', title: 'Swing Pass email', src: 'ref/swingpass-email.html', sets: [['screen:Swing Pass email', 1]], variants: 0,
+      parts: [['KvRow','KvRow'],['Divider','Divider'],['Button','Button'],['MailFoot','MailFoot']],
+      needs: [] },
+    { key: 'SwingPassPage', title: 'Swing Pass', src: 'ref/swingpass-page.html', sets: [['screen:Swing Pass', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['PassCard','PassCard'],['SaveCard','SaveCard'],['PayMethod','PayMethod'],['DealCard','DealCard'],['Dot','Pagination'],['Perk','Perk'],['FaqItem','FaqItem'],['Divider','Divider'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassMember', title: 'Swing Pass member', src: 'ref/swingpass-member.html', sets: [['screen:Swing Pass member', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['PassCard','PassCard'],['SaveCard','SaveCard'],['PayMethod','PayMethod'],['DealCard','DealCard'],['Dot','Pagination'],['Perk','Perk'],['FaqItem','FaqItem'],['Divider','Divider'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassEvents', title: 'Swing Pass events', src: 'ref/swingpass-events.html', sets: [['screen:Swing Pass events', 1]], variants: 0,
+      parts: [['EventsHead','EventsHead'],['EventCard','EventCard'],['HostCta','HostCta']],
+      needs: [] },
+    { key: 'TeeTime', title: 'Tee time', src: 'ref/teetime.html', sets: [['screen:Tee time', 1]], variants: 0,
+      parts: [['EventsHead','EventsHead'],['ProductCard','ProductCard'],['HostCta','HostCta']],
+      needs: [] },
+    { key: 'SwingPassEvent', title: 'Swing Pass event', src: 'ref/swingpass-event.html', sets: [['screen:Swing Pass event', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['PromoCard','PromoCard'],['CreditStrip','CreditStrip'],['InfoTile','InfoTile'],['Venue','Venue'],['BrandCard','BrandCard'],['Divider','Divider'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassJoin', title: 'Join Swing Pass', src: 'ref/swingpass-join.html', sets: [['screen:Join Swing Pass', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['NoteBar','NoteBar'],['Plan','Plan'],['PayMethod','PayMethod'],['Checkbox','Checkbox'],['SlideConfirm','Button']],
+      needs: ['wallet'] },
+    { key: 'SwingPassBilling', title: 'Swing Pass billing', src: 'ref/swingpass-billing.html', sets: [['screen:Swing Pass billing', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['NoteBar','NoteBar'],['MethodRow','MethodRow'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassOnetime', title: 'Swing Pass one time', src: 'ref/swingpass-onetime.html', sets: [['screen:Swing Pass one time', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['NoteBar','NoteBar'],['MethodRow','MethodRow']],
+      needs: [] },
+    { key: 'SwingPassQris', title: 'Swing Pass QRIS', src: 'ref/swingpass-qris.html', sets: [['screen:Swing Pass QRIS', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['NoteBar','NoteBar'],['Divider','Divider'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassWaiting', title: 'Swing Pass waiting', src: 'ref/swingpass-waiting.html', sets: [['screen:Swing Pass waiting', 1]], variants: 0,
+      parts: [['SwingPass','SwingPass'],['AppBar','AppBar'],['PassCard','PassCard'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassSuccess', title: 'Swing Pass success', src: 'ref/swingpass-success.html', sets: [['screen:Swing Pass success', 1]], variants: 0,
+      parts: [['KvRow','KvRow'],['Divider','Divider'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassSuccessOnetime', title: 'Swing Pass success one time', src: 'ref/swingpass-success-onetime.html', sets: [['screen:Swing Pass success one time', 1]], variants: 0,
+      parts: [['KvRow','KvRow'],['Divider','Divider'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassCancel', title: 'Swing Pass cancel', src: 'ref/swingpass-cancel.html', sets: [['screen:Swing Pass cancel', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['KvRow','KvRow'],['ChoiceRow','ChoiceRow'],['Divider','Divider'],['Button','Button']],
+      needs: [] },
+    { key: 'SwingPassHistory', title: 'Swing Pass billing history', src: 'ref/swingpass-history.html', sets: [['screen:Swing Pass billing history', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['PayMethod','PayMethod'],['BillRow','BillRow']],
+      needs: [] },
+    { key: 'GolfCourse', title: 'Golf course', src: 'ref/golf-course.html', sets: [['screen:Golf course', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['PromoCard','PromoCard'],['CreditStrip','CreditStrip'],['DateBtn','DateBtn'],['SessionTab','SessionTab'],['RateCard','RateCard'],['InclItem','InclItem'],['Amenity','Amenity'],['Venue','Venue'],['StatTile','StatTile'],['Divider','Divider'],['Button','Button']],
+      needs: [] },
+    { key: 'Booking', title: 'Booking', src: 'ref/booking.html', sets: [['screen:Booking', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['KvRow','KvRow'],['PayType','PayType'],['Stepper','Stepper'],['PlayerRow','PlayerRow'],['MiniRow','MiniRow'],['PriceRow','PriceRow'],['PayMethod','PayMethod'],['Caption','Caption'],['Divider','Divider'],['PayBar','PayBar']],
+      needs: ['groups-2','referral','info'] },
+    { key: 'BookingDetails', title: 'Booking details', src: 'ref/booking-details.html', sets: [['screen:Booking details', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['Badge','Badge'],['KvRow','KvRow'],['PlayerRow','PlayerRow'],['MiniRow','MiniRow'],['PriceRow','PriceRow'],['Caption','Caption'],['Divider','Divider']],
+      needs: ['more-h'] },
+    { key: 'Track', title: 'Track', src: 'ref/track.html', sets: [['screen:Track', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['StatPanel','StatPanel'],['Caption','Caption'],['RefRow','RefRow']],
+      needs: ['search','tick-circle'] },
+    { key: 'TournamentQuestions', title: 'Tournament questions', src: 'ref/tournament-questions.html', sets: [['screen:Tournament questions', 1]], variants: 0,
+      parts: [['Avatar','Avatar'],['ChoiceRow','ChoiceRow'],['Button','Button']],
+      needs: [] },
+    { key: 'TournamentConfirm', title: 'Tournament confirm', src: 'ref/tournament-confirm.html', sets: [['screen:Tournament confirm', 1]], variants: 0,
+      parts: [['AppBar','AppBar'],['KvRow','KvRow'],['PlayerRow','PlayerRow'],['MiniRow','MiniRow'],['PriceRow','PriceRow'],['PayMethod','PayMethod'],['Divider','Divider'],['PayBar','PayBar']],
+      needs: [] }
+  ];
+  function isScreen(key) { return SCREEN_PAGES.some(function (p) { return p.key === key; }); }
+  function setNames(p) { return p.sets.map(function (s) { return s[0]; }); }
+
+  var S = { step: 'tokens', summary: null, status: null, index: null, busy: false, picked: { Color: true, Typography: true, Button: true, Badge: true, Tag: true, Checkbox: true, Radio: true, Switch: true, Check: true, TextField: true, Select: true, Menu: true, List: true, Tabs: true, Divider: true, Avatar: true, Caption: true, Pagination: true, Rating: true, Stepper: true, Pin: true, Slider: true, Toaster: true, Tooltip: true, Steps: true, Review: true, BottomNav: true, AppBar: true, Card: true, ActionCard: true, CourseCard: true, Sheet: true, Search: true, DatePicker: true, TimePicker: true, SwingPass: true, Accordion: true },
+    opt: { variables: true, text: true, effects: true, paints: true }, icSets: { line: true, solid: false }, openParts: {} };
+
+  /* ---------- prefs ---------- */
+  function savePrefs() { send({ type: 'save-prefs', prefs: { url: $('url').value, collection: $('col').value, step: S.step, picked: S.picked, opt: S.opt, icSets: S.icSets } }); }
+
+  /* ---------- steps ---------- */
+  function setStep(step) {
+    S.step = step;
+    document.querySelectorAll('.step').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-step') === step); });
+    document.querySelectorAll('.panel').forEach(function (p) { p.classList.toggle('on', p.id === 'p-' + step); });
+    if (step === 'icons') loadIndex();
+    renderFooter();
+    savePrefs();
+  }
+  document.querySelectorAll('.step').forEach(function (b) { b.onclick = function () { if (!S.busy) setStep(b.getAttribute('data-step')); }; });
+
+  function renderSteps() {
+    var st = S.status;
+    var done1 = st && st.vars > 0, done2 = st && (st.icons.line + st.icons.solid) > 0, built = st ? COMPONENT_PAGES.filter(function (p) { return setNames(p).every(function (s) { return st.sets.indexOf(s) >= 0; }); }) : [];
+    $('s1').textContent = done1 ? n(st.vars) + ' variables' : 'Not imported';
+    $('s2').textContent = done2 ? n(st.icons.line + st.icons.solid) + ' icons' : 'Not imported';
+    $('s3').textContent = built.length ? built.length + ' of ' + COMPONENT_PAGES.length + ' built' : 'Not built';
+    toggleDone('n1', 1, done1); toggleDone('n2', 2, done2); toggleDone('n3', 3, built.length === COMPONENT_PAGES.length);
+    var scr = st ? SCREEN_PAGES.filter(function (p) { return setNames(p).every(function (s) { return st.sets.indexOf(s) >= 0; }); }) : [];
+    $('s4').textContent = scr.length ? scr.length + ' of ' + SCREEN_PAGES.length + ' built' : 'Not built';
+    toggleDone('n4', 4, scr.length === SCREEN_PAGES.length);
+  }
+  function toggleDone(id, num, done) {
+    var el = $(id);
+    el.parentNode.parentNode.classList.toggle('done', !!done);
+    el.innerHTML = done ? '<svg width="10" height="10" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>' : String(num);
+  }
+
+  /* ---------- footer: one primary action per step ---------- */
+  function renderFooter() {
+    var b = $('primary'), msg = '';
+    if (S.step === 'tokens') {
+      var s = S.summary, total = s ? tokenCount(s) : 0;
+      b.innerHTML = S.busy ? ic('spin', 'spin') + 'Importing…' : (total ? 'Import ' + n(total) + ' items' : 'Import tokens');
+      b.disabled = S.busy || !total;
+      msg = !$('css').value.trim() ? 'Fetch or paste a tokens.css first' : (s && s.skipped.length ? s.skipped.length + ' skipped, see details' : '');
+    } else if (S.step === 'icons') {
+      var want = icWanted();
+      b.innerHTML = S.busy ? ic('spin', 'spin') + 'Importing…' : (want ? 'Import ' + n(want) + ' icons' : 'Import icons');
+      b.disabled = S.busy || !want;
+      msg = S.index ? '' : 'Reading icons/index.json…';
+    } else if (S.step === 'components') {
+      var picked = COMPONENT_PAGES.filter(function (p) { return S.picked[p.key]; });
+      var allBuilt = picked.length && S.status && picked.every(function (p) { return setNames(p).every(function (s) { return S.status.sets.indexOf(s) >= 0; }); });
+      var verb = allBuilt ? 'Update ' : 'Build ';
+      b.innerHTML = S.busy ? ic('spin', 'spin') + 'Building…' : (picked.length ? verb + picked.length + (picked.length === 1 ? ' page' : ' pages') : 'Build components');
+      b.disabled = S.busy || !picked.length || !(S.status && S.status.vars);
+      msg = S.status && !S.status.vars ? (S.status.lib ? 'Library mode · build screens in the Screens tab' : 'Import tokens first') : picked.length ? n(picked.reduce(function (a, p) { return a + p.variants; }, 0)) + ' variants' : 'Pick at least one page';
+    } else {
+      var ps = SCREEN_PAGES.filter(function (p) { return S.picked[p.key]; });
+      var sBuilt = ps.length && S.status && ps.every(function (p) { return setNames(p).every(function (s) { return S.status.sets.indexOf(s) >= 0; }); });
+      b.innerHTML = S.busy ? ic('spin', 'spin') + 'Building…' : (ps.length ? (sBuilt ? 'Update ' : 'Build ') + ps.length + (ps.length === 1 ? ' screen' : ' screens') : 'Build screens');
+      b.disabled = S.busy || !ps.length || !(S.status && (S.status.vars || S.status.lib));
+      msg = S.status && !S.status.vars ? (S.status.lib ? 'Atoms from the ' + S.status.lib.file + ' library' : 'Import tokens first') : ps.length ? 'With its UI components' : 'Pick at least one screen';
+    }
+    $('footMsg').textContent = msg;
+  }
+  $('primary').onclick = function () {
+    if (S.step === 'tokens') runTokens();
+    else if (S.step === 'icons') runIcons();
+    else if (S.step === 'screens') runBuild(UI_PAGES.concat(SCREEN_PAGES), 'scrOut');
+    else runBuild(COMPONENT_PAGES, 'cmpOut');
+  };
+
+  /* ---------- source ---------- */
+  function srcState(text, kind) { $('srcMsg').textContent = text; $('srcDot').className = 'dot' + (kind ? ' ' + kind : ''); }
+  function dsBase() {
+    var u = $('url').value.trim() || 'https://stat.chara.id/swing/ds/tokens.css';
+    return u.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
+  }
+  var STAMP = Date.now();
+  function bust(u, stamp) { return u + (u.indexOf('?') < 0 ? '?' : '&') + '_t=' + (stamp || STAMP); }
+
+  $('fetch').onclick = function () {
+    var url = $('url').value.trim();
+    if (!url) { $('url').focus(); return; }
+    if (!/\.css$/i.test(url.replace(/[?#].*$/, ''))) {
+      srcState('This field takes the tokens CSS file, not a page (' + (url.replace(/[?#].*$/, '').split('/').pop() || url) + '). Use https://stat.chara.id/swing/ds/tokens.css. Components are built from the plugin, not from the DS pages.', 'bad');
+      return;
+    }
+    srcState('Fetching…');
+    fetch(bust(url, Date.now()), { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function (t) {
+      $('css').value = t;
+      var file = url.replace(/[?#].*$/, '').split('/').pop() || 'tokens.css';
+      srcState(file + ' · ' + (t.length / 1024).toFixed(1) + ' KB · fetched ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), 'ok');
+      S.index = null;
+      savePrefs();
+      check();
+    }).catch(function (e) {
+      console.error('[token-importer] fetch failed', url, e);
+      srcState('Could not fetch (' + e.message + '). Check the domain is in manifest networkAccess and sends CORS, or paste the CSS.', 'bad');
+    });
+  };
+  $('url').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('fetch').click(); });
+
+  /* ---------- 1 tokens ---------- */
+  var checkTimer = null;
+  $('css').addEventListener('input', function () { clearTimeout(checkTimer); checkTimer = setTimeout(check, 300); });
+  var checkTimer = null;
+
+  function check() {
+    var css = $('css').value;
+    $('cssLen').textContent = css ? n(css.split('\n').length) + ' lines' : '';
+    if (!css.trim()) { S.summary = null; renderCounts(); renderFooter(); return; }
+    send({ type: 'check', css: css });
+  }
+  function tokenCount(s) {
+    var o = S.opt;
+    return (o.variables ? s.colors + s.numbers + s.strings : 0) + (o.text ? s.text : 0) + (o.effects ? s.effects : 0) + (o.paints ? s.paints : 0);
+  }
+  function renderCounts() {
+    var s = S.summary, st = S.status, o = S.opt;
+    var have = function (k) { return st ? st[k] : 0; };
+    var stat = function (inFile, total, word) {
+      if (!s) return ['', 'Fetch or paste the CSS'];
+      if (!inFile) return ['', 'Not in this file yet'];
+      return inFile >= total ? ['ok', 'In file · import updates in place'] : ['part', n(inFile) + ' of ' + n(total) + ' ' + word + ' in file'];
+    };
+    var cards = [
+      { key: 'variables', title: 'Variables', total: [s ? s.colors + s.numbers + s.strings : null, 'variables'],
+        status: stat(have('vars'), s ? s.colors + s.numbers + s.strings : 0, 'variables'),
+        items: s ? [['Colors', s.colors], ['Numbers · spacing, radius, size', s.numbers], ['Font family', s.strings]] : [] },
+      { key: 'text', title: 'Text styles', total: [s ? s.text : null, 'styles'], status: stat(have('text'), s ? s.text : 0, 'styles'),
+        items: s ? (s.textDesktop
+          ? [['Mobile · Heading, Subheading, Body, CTA, Label', s.text - s.textDesktop], ['Desktop 1024+ · Heading, Subheading, Body', s.textDesktop]]
+          : [['Heading · Subheading · Body · CTA · Label', s.text]]) : [] },
+      { key: 'effects', title: 'Effect styles', total: [s ? s.effects : null, 'styles'], status: stat(have('effects'), s ? s.effects : 0, 'styles'),
+        items: s ? [['Elevation · Line · Focus', s.effects]] : [] },
+      { key: 'paints', title: 'Gradients', total: [s ? s.paints : null, 'styles'], status: s ? ['', 'Color styles: variables cannot hold gradients'] : ['', 'Fetch or paste the CSS'],
+        items: s ? [['Brand · Surface · Overlay', s.paints]] : [] }
+    ];
+    $('tokRows').innerHTML = cards.map(function (c) { c.on = !!o[c.key]; return card(c); }).join('');
+    wireCards($('tokRows'), function (k, v) { S.opt[k] = v; renderCounts(); renderFooter(); savePrefs(); });
+    $('tokTotal').textContent = s ? n(tokenCount(s)) + ' items' : '';
+    var bits = [];
+    if (s && s.modes.length > 1) bits.push('Modes: ' + s.modes.join(', '));
+    if (s && s.folded) bits.push(n(s.folded) + ' tracking tokens go into the text styles');
+    if (s && s.hidden) bits.push(n(s.hidden) + ' variables hidden from pickers (z-index, tracking)');
+    $('tokNote').textContent = bits.join(' · ');
+    var box = $('skipBox');
+    if (s && s.skipped.length) {
+      box.innerHTML = '<details><summary>' + ic('chev') + n(s.skipped.length) + ' skipped</summary>' +
+        s.skipped.map(function (k) { return '<div class="skip"><code>' + esc(k.css) + '</code><div class="muted">' + esc(k.why) + '</div></div>'; }).join('') + '</details>';
+    } else box.innerHTML = '';
+  }
+  function runTokens() {
+    if (!$('css').value.trim()) return;
+    S.busy = true; renderFooter(); savePrefs();
+    send({ type: 'import', css: $('css').value, opts: { collection: $('col').value.trim() || 'Tokens',
+      variables: S.opt.variables, text: S.opt.text, effects: S.opt.effects, paints: S.opt.paints } });
+  }
+  function renderTokResult(r) {
+    var h = '<div class="sec-h">Imported</div><div class="result">' +
+      '<div class="result-line">' + ic('check', 'ok-i') + '<span>' + n(r.created) + ' created · ' + n(r.updated) + ' updated' + (r.renamed ? ' · ' + n(r.renamed) + ' moved to new groups' : '') + '</span></div>';
+    r.notes.forEach(function (x) { h += '<div class="result-line">' + ic('info', 'info-i') + '<span class="muted">' + esc(x) + '</span></div>'; });
+    r.errors.forEach(function (e) { h += '<div class="result-line">' + ic('x', 'bad-i') + '<span class="err">' + esc(e) + '</span></div>'; });
+    $('tokOut').innerHTML = h + '</div>';
+    $('tokOut').hidden = false;
+  }
+
+  /* ---------- 2 icons ---------- */
+
+  function loadIndex() {
+    if (S.index) return;
+    fetch(bust(dsBase() + 'icons/index.json', Date.now()), { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (j) { S.index = j; renderIconRows(); renderFooter(); })
+      .catch(function (e) { $('footMsg').textContent = 'Could not read icons/index.json (' + e.message + ')'; });
+  }
+  function setCount(set) { return S.index ? S.index.filter(function (x) { return set === 'line' ? x.l : x.s; }).length : 0; }
+  function inFile(set) { return S.status ? S.status.icons[set] : 0; }
+  function icWanted() {
+    if (!S.index) return 0;
+    return (S.icSets.line ? Math.max(0, setCount('line') - inFile('line')) : 0) + (S.icSets.solid ? Math.max(0, setCount('solid') - inFile('solid')) : 0);
+  }
+  function renderIconRows() {
+    $('icRows').innerHTML = [['line', 'Line', 'Outline, 24 grid. The default set'], ['solid', 'Solid', 'Filled, for selected states']].map(function (p) {
+      var total = S.index ? setCount(p[0]) : null, have = inFile(p[0]), left = total == null ? 0 : Math.max(0, total - have);
+      var status = !S.index ? ['', 'Reading icons/index.json…']
+        : !have ? ['', 'Not in this file yet']
+        : left ? ['part', n(left) + ' new since last import'] : ['ok', 'All in file'];
+      return card({ key: p[0], on: !!S.icSets[p[0]], title: p[1], status: status, total: [total, 'icons'],
+        items: S.index ? [['In this file', have, have > 0], ['To import', left], ['Name', 'Icon/' + p[1] + '/…']] : [] });
+    }).join('');
+    wireCards($('icRows'), function (k, v) { S.icSets[k] = v; renderIconRows(); renderFooter(); savePrefs(); });
+  }
+
+  // Figma's SVG import ignores <use href="#id">: replace each one with a copy of what it points at.
+  function inlineUse(text) {
+    if (!/<use[\s>]/i.test(text)) return text;
+    try {
+      var doc = new DOMParser().parseFromString(text, 'image/svg+xml'), svg = doc.documentElement;
+      var uses = Array.prototype.slice.call(svg.getElementsByTagName('use'));
+      uses.forEach(function (u) {
+        var ref = (u.getAttribute('href') || u.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || u.getAttribute('xlink:href') || '').replace(/^#/, '');
+        var all = svg.getElementsByTagName('*'), target = null;
+        for (var i = 0; i < all.length; i++) if (all[i].getAttribute('id') === ref) { target = all[i]; break; }
+        if (!target) { u.parentNode.removeChild(u); return; }
+        var copy = target.cloneNode(true);
+        copy.removeAttribute('id');
+        Array.prototype.slice.call(u.attributes).forEach(function (a) {
+          if (/(^|:)href$|^x$|^y$/.test(a.name)) return;
+          copy.setAttribute(a.name, a.value);
+        });
+        var x = parseFloat(u.getAttribute('x') || 0), y = parseFloat(u.getAttribute('y') || 0);
+        if (x || y) copy.setAttribute('transform', 'translate(' + x + ' ' + y + ')' + (copy.getAttribute('transform') ? ' ' + copy.getAttribute('transform') : ''));
+        u.parentNode.replaceChild(copy, u);
+      });
+      Array.prototype.slice.call(svg.getElementsByTagName('defs')).forEach(function (d) { d.parentNode.removeChild(d); });
+      return new XMLSerializer().serializeToString(svg);
+    } catch (e) { return text; }
+  }
+
+  var icAck = null;
+  function icProgress(done, total, text, kind) {
+    $('icOut').hidden = false;
+    $('icOut').innerHTML = '<div class="sec-h">' + (kind === 'done' ? 'Imported' : 'Importing') + ' <span class="muted num">' + n(done) + ' / ' + n(total) + '</span></div>' +
+      '<div class="bar"><i style="width:' + (total ? Math.round(done / total * 100) : 0) + '%"></i></div>' +
+      (text ? '<p class="note' + (kind === 'bad' ? ' err' : '') + '">' + esc(text) + '</p>' : '');
+  }
+  async function runIcons() {
+    if (!S.index) return;
+    var sets = [];
+    if (S.icSets.line) sets.push('line');
+    if (S.icSets.solid) sets.push('solid');
+    S.busy = true; renderFooter();
+    STAMP = Date.now();
+    var base = dsBase() + 'icons/', jobs = [], made = 0, skipped = 0, failed = 0;
+    sets.forEach(function (set) { S.index.forEach(function (x) { if (set === 'line' ? x.l : x.s) jobs.push({ set: set, name: x.n, cat: x.c }); }); });
+    try {
+      var BATCH = 40;
+      for (var i = 0; i < jobs.length; i += BATCH) {
+        var chunk = jobs.slice(i, i + BATCH);
+        var svgs = await Promise.all(chunk.map(function (j) {
+          return fetch(bust(base + j.set + '/' + j.name + '.svg'), { cache: 'no-store' })
+            .then(function (x) { return x.ok ? x.text() : null; }).catch(function () { return null; });
+        }));
+        var items = [], lost = 0;
+        chunk.forEach(function (j, k) { if (svgs[k] && /<svg/i.test(svgs[k])) { j.svg = inlineUse(svgs[k]); items.push(j); } else lost++; });
+        var ack = await new Promise(function (res) { icAck = res; send({ type: 'icons-batch', items: items }); });
+        if (ack.error) throw new Error(ack.error);
+        made = ack.progress.made; skipped = ack.progress.skipped; failed += lost;
+        icProgress(Math.min(i + BATCH, jobs.length), jobs.length, n(made) + ' created · ' + n(skipped) + ' already in file' + (failed ? ' · ' + n(failed) + ' could not be downloaded' : ''));
+      }
+    } catch (e) {
+      icProgress(0, jobs.length, 'Stopped: ' + e.message, 'bad');
+    }
+    icTotal = jobs.length;
+    send({ type: 'icons-end' });
+  }
+  var icTotal = 0;
+
+  /* ---------- build progress ---------- */
+  // Sets each page builds, in build order. Button builds SwingLoader first; Tag refreshes Counter first.
+  var BUILD_ORDER = { Color: ['Color'], Typography: ['Typography'], Button: ['SwingLoader', 'Button', 'IconButton', 'SlideConfirm'], Badge: ['Badge', 'Counter', 'Indicator'], Tag: ['Counter', 'Tag'], Checkbox: ['Checkbox'], Radio: ['Radio'], Switch: ['Switch'], Check: ['Check'], TextField: ['TextField'], Select: ['Select', 'Option'], Menu: ['MenuItem', 'Menu'], List: ['ListItem', 'List'], Tabs: ['Tab', 'Tabs'], Divider: ['Divider'], Avatar: ['Avatar', 'AvatarGroup'], Caption: ['Caption'], Pagination: ['Dot', 'Dots', 'DotsCount', 'Segment', 'Segments'], Rating: ['Star', 'Stars', 'Rating', 'Rate'], Stepper: ['Stepper'], Pin: ['PinCell', 'Pin'], Slider: ['Slider'], Toaster: ['Toaster'], Tooltip: ['Tooltip', 'MapPin'], Steps: ['Step', 'Steps'], Review: ['Review', 'Comment', 'ChatRow'], BottomNav: ['BottomNavItem', 'BottomNav'], AppBar: ['Brand', 'AppBar'], Card: ['Media', 'Card', 'Stat'], ActionCard: ['ActionCard'], CourseCard: ['CourseCard', 'CardRail', 'Carousel'], Sheet: ['SheetHead', 'ShareApp', 'Sheet'], Search: ['SearchRow', 'SearchBar', 'SearchPanel'], DatePicker: ['CalDay', 'Calendar', 'DateStripDay', 'DateStrip'], TimePicker: ['Slot', 'SlotsGroup', 'TimeWheel'], SwingPass: ['SwingPass'], Accordion: ['Accordion'], Home: ['Home screen'], Account: ['Account screen'], Updates: ['Updates screen'], SwingCredits: ['Swing Credits screen'], CreditsHistory: ['Swing Credits history screen'], PersonalInfo: ['Personal information screen'], VerifyEmail: ['Verify email screen'], ReferEarn: ['Refer & earn screen'], IgStory: ['IG story screen'], SwingPassEmail: ['Swing Pass email screen'], SwingPassPage: ['Swing Pass screen'], SwingPassMember: ['Swing Pass member screen'], SwingPassEvents: ['Swing Pass events screen'], TeeTime: ['Tee time screen'], SwingPassEvent: ['Swing Pass event screen'], SwingPassJoin: ['Join Swing Pass screen'], SwingPassBilling: ['Swing Pass billing screen'], SwingPassOnetime: ['Swing Pass one time screen'], SwingPassQris: ['Swing Pass QRIS screen'], SwingPassWaiting: ['Swing Pass waiting screen'], SwingPassSuccess: ['Swing Pass success screen'], SwingPassSuccessOnetime: ['Swing Pass success one time screen'], SwingPassCancel: ['Swing Pass cancel screen'], SwingPassHistory: ['Swing Pass billing history screen'], GolfCourse: ['Golf course screen'], Booking: ['Booking screen'], BookingDetails: ['Booking details screen'], Track: ['Track screen'], TournamentQuestions: ['Tournament questions screen'], TournamentConfirm: ['Tournament confirm screen'] };
+  var SET_SIZE = { Color: 100, Typography: 24, SwingLoader: 4, Button: 144, IconButton: 108, SlideConfirm: 8, Badge: 48, Counter: 12, Indicator: 2, Tag: 64, Checkbox: 10, Radio: 7, Switch: 6, Check: 16, TextField: 42, Select: 8, Option: 4, MenuItem: 6, Menu: 2, ListItem: 40, List: 3, Tab: 4, Tabs: 4, Divider: 7, Avatar: 12, AvatarGroup: 3, Caption: 8, Dot: 4, Dots: 4, DotsCount: 1, Segment: 6, Segments: 2, Star: 6, Stars: 22, Rating: 1, Rate: 24, Stepper: 5, PinCell: 15, Pin: 8, Slider: 6, Toaster: 5, Tooltip: 8, MapPin: 2, Step: 6, Steps: 1, Review: 2, Comment: 1, ChatRow: 2, BottomNavItem: 5, BottomNav: 3, Brand: 2, AppBar: 16, Media: 16, Card: 4, Stat: 2, ActionCard: 24, CourseCard: 4, CardRail: 1, Carousel: 1, SheetHead: 4, ShareApp: 1, Sheet: 5, SearchRow: 4, SearchBar: 2, SearchPanel: 2, CalDay: 10, Calendar: 1, DateStripDay: 3, DateStrip: 1, Slot: 6, SlotsGroup: 1, TimeWheel: 1, SwingPass: 2, Accordion: 4 };
+  var B = null, bTimer = null;
+
+  function buildStart(names, lib) {
+    B = { start: Date.now(), page: null, rows: [], cur: -1 };
+    names.forEach(function (pg, i) {
+      if (lib && i === 0) B.rows.push({ page: pg, set: 'Library tokens', done: 0, total: lib.tokens || 1, state: 'wait' });
+      (BUILD_ORDER[pg] || [pg]).forEach(function (s) { B.rows.push({ page: pg, set: s, done: 0, total: SET_SIZE[s] || 1, state: 'wait' }); });
+    });
+    clearInterval(bTimer);
+    bTimer = setInterval(renderProgress, 500);
+    renderProgress();
+  }
+  function buildPage(pg) { B.page = pg; renderProgress(); }
+  function buildTick(m) {
+    if (!B) return;
+    var i = -1;
+    for (var k = 0; k < B.rows.length; k++) if (B.rows[k].page === B.page && B.rows[k].set === m.set && B.rows[k].state !== 'done') { i = k; break; }
+    if (i < 0) {   // a set the plan did not list (library imports, parts built on demand): before the page's pending rows
+      var at = -1;
+      for (var q = 0; q < B.rows.length; q++) if (B.rows[q].page === B.page && B.rows[q].state === 'wait' && !/^Library/.test(B.rows[q].set)) { at = q; break; }
+      var row = { page: B.page, set: m.set, done: 0, total: m.total, state: 'wait' };
+      if (at < 0) { B.rows.push(row); i = B.rows.length - 1; } else { B.rows.splice(at, 0, row); i = at; }
+    }
+    var r = B.rows[i];
+    r.total = m.total; r.done = m.done;
+    r.state = m.phase === 'artboard' || (/^Library/.test(m.set) && m.done >= m.total) ? 'done' : 'now';
+    if (m.phase === 'artboard') r.label = 'Artboard';
+    B.cur = i;
+    for (var j = 0; j < i; j++) if (B.rows[j].page === B.page || B.rows[j].state === 'now') { B.rows[j].state = 'done'; B.rows[j].done = B.rows[j].total; }
+    renderProgress();
+  }
+  function buildEnd(ok) {
+    clearInterval(bTimer);
+    if (!B) return;
+    if (ok) B.rows.forEach(function (r) { r.state = 'done'; r.done = r.total; });
+    B.end = Date.now();
+    renderProgress();
+  }
+  function secs(ms) { var s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's'; }
+  function renderProgress() {
+    if (!B) return;
+    var done = 0, total = 0;
+    B.rows.forEach(function (r) { done += Math.min(r.done, r.total); total += r.total; });
+    var pct = total ? Math.floor(done / total * 100) : 0, running = !B.end;
+    var now = B.rows.filter(function (r) { return r.state === 'now'; })[0];
+    var elapsed = (B.end || Date.now()) - B.start;
+    var eta = running && done > 4 && elapsed > 2000 ? ' · about ' + secs(elapsed / done * (total - done)) + ' left' : '';
+    var title = running ? (now ? 'Building ' + now.set : B.page ? 'Preparing ' + B.page : 'Starting…') : 'Done';
+    var h = '<div class="bp' + (running ? ' run' : '') + '">' +
+      '<div class="bp-head"><div><div class="bp-kicker">' + (running ? (B.screens ? 'Building screens' : 'Building components') : 'Build finished') + '</div><div class="bp-title">' + esc(title) + '</div></div>' +
+      '<div class="bp-pct">' + pct + '%</div></div>' +
+      '<div class="bp-track"><div class="bp-fill" style="width:' + pct + '%"></div></div>' +
+      '<div class="bp-meta"><span>' + n(done) + ' of ' + n(total) + ' variants</span><span>' + secs(elapsed) + eta + '</span></div><ul class="bp-list">';
+    var lastPage = null;
+    B.rows.forEach(function (r) {
+      if (r.page !== lastPage) { h += '<li class="page"><span></span><span>' + esc(isScreen(r.page) ? 'Screen / ' + r.page : r.page + ' page') + '</span><span></span></li>'; lastPage = r.page; }
+      var icon = r.state === 'done' ? ic('check', 'ok-i') : r.state === 'now' ? ic('spin', 'spin') : '<i></i>';
+      var right = r.state === 'now' ? (r.label || n(r.done) + ' / ' + n(r.total)) : n(r.total);
+      h += '<li class="' + r.state + '"><span class="st">' + icon + '</span><span>' + esc(r.set) + '</span><span class="num">' + right + '</span></li>';
+    });
+    var html = h + '</ul></div>';
+    var keepNotes = B.notesHtml || '';
+    var foot = running
+      ? '<div class="ov-foot"><span class="muted">Keep this window open. Figma is busy until the build finishes.</span></div>'
+      : '<div class="ov-notes">' + keepNotes + '</div><div class="ov-foot"><span class="muted">' +
+        (B.failed ? 'Finished with errors' : 'Instances in your designs are updated') + '</span>' +
+        '<button class="btn pri" id="ovClose">Done</button></div>';
+    $('ovBody').innerHTML = html + foot;
+    $('overlay').hidden = false;
+    var cur = $('ovBody').querySelector('li.now');
+    if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+    var close = $('ovClose');
+    if (close) { close.onclick = closeOverlay; close.focus(); }
+    if ((S.step === 'components' || S.step === 'screens') && running) {
+      $('primary').innerHTML = ic('spin', 'spin') + 'Building… ' + pct + '%';
+      $('footMsg').textContent = n(done) + ' of ' + n(total) + ' variants';
+    }
+  }
+  function closeOverlay() {
+    $('overlay').hidden = true;
+    if (!B) return;
+    var done = 0; B.rows.forEach(function (r) { done += r.total; });
+    var out = $(B.out || 'cmpOut');
+    out.innerHTML = '<div class="result-line">' + (B.failed ? ic('x', 'bad-i') : ic('check', 'ok-i')) + '<span>' +
+      (B.failed ? 'Build finished with errors' : B.screens ? 'Built in ' + secs(B.end - B.start) : 'Built ' + n(done) + ' variants in ' + secs(B.end - B.start)) + '</span></div>' +
+      (B.notesHtml ? '<div class="result" style="margin-top:6px">' + B.notesHtml + '</div>' : '');
+    out.hidden = false;
+  }
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && B && B.end && !$('overlay').hidden) closeOverlay(); });
+
+  /* ---------- 3 components ---------- */
+  function renderCmpRows() {
+    var st = S.status;
+    $('cmpRows').innerHTML = COMPONENT_PAGES.map(function (p) {
+      var have = st ? setNames(p).filter(function (s) { return st.sets.indexOf(s) >= 0; }).length : 0;
+      var built = have === p.sets.length, part = have > 0 && !built;
+      return card({ key: p.key, on: !!S.picked[p.key], title: p.title || p.key, total: p.label ? [1, 'artboard'] : [p.variants, 'variants'],
+        status: built ? ['ok', 'Built · rebuild updates in place'] : part ? ['part', have + ' of ' + p.sets.length + ' sets built'] : ['', 'Not built yet'],
+        items: p.sets.map(function (s) { return [s[0], s[1], !!(st && st.sets.indexOf(s[0]) >= 0)]; }) });
+    }).join('');
+    wireCards($('cmpRows'), function (k, v) { S.picked[k] = v; renderCmpRows(); renderFooter(); savePrefs(); });
+    var all = COMPONENT_PAGES.every(function (p) { return S.picked[p.key]; });
+    $('cmpAll').textContent = all ? 'Clear' : 'Select all';
+    var w = $('cmpWarn'), msg = '';
+    if (st && !st.vars && st.lib) msg = '<div class="callout">' + ic('info') + '<span>This file has no tokens of its own, so it uses the <b>' + esc(st.lib.file) + '</b> library (keys saved ' + esc(new Date(st.lib.at).toLocaleString()) + '). DS pages are built and published in the DS file. Build screens in the Screens tab.</span></div>';
+    else if (st && !st.vars) msg = '<div class="callout warn">' + ic('info') + '<span>No tokens in this file yet. Import tokens first; components bind to them. To build screens from a published DS instead, run Export library keys in the DS file.</span></div>';
+    else if (st && !st.icons.line) msg = '<div class="callout">' + ic('info') + '<span>Icons are not imported, so components get a placeholder icon. Import the Line set first for the real ones.</span></div>';
+    w.innerHTML = msg; w.hidden = !msg;
+    var ls = $('libSec');
+    ls.hidden = !(st && st.vars);   // the DS file is the one with tokens
+    if (st && st.vars && st.lib && !S.keysMsg) $('libMsg').textContent = 'Keys saved from ' + st.lib.file + ' on ' + new Date(st.lib.at).toLocaleString() + ' (' + n(st.lib.sets) + ' sets). Publish, then export again after you change components.';
+  }
+  $('libExport').onclick = function () {
+    S.keysMsg = 'Exporting…'; $('libMsg').textContent = S.keysMsg; $('libExport').disabled = true;
+    send({ type: 'export-keys' });
+  };
+  $('cmpAll').onclick = function () {
+    var all = COMPONENT_PAGES.every(function (p) { return S.picked[p.key]; });
+    COMPONENT_PAGES.forEach(function (p) { S.picked[p.key] = !all; });
+    renderCmpRows(); renderFooter(); savePrefs();
+  };
+
+  /* ---------- 4 screens ---------- */
+  function renderScrRows() {
+    var st = S.status, lib = st && !st.vars && st.lib;
+    var local = function (set) { return !!(st && st.sets.indexOf(set) >= 0); };
+    var has = function (set) { return isUiPart(set) ? local(set) : !!(st && (lib ? (st.lib.names || []).indexOf(set) >= 0 : local(set))); };
+    $('scrRows').innerHTML = SCREEN_PAGES.map(function (p) {
+      var built = !!(st && st.sets.indexOf('screen:' + p.key) >= 0);
+      return card({ key: p.key, on: !!S.picked[p.key], title: p.title, total: [p.parts.length, 'parts'], toggle: true, open: !!S.openParts[p.key],
+        status: built ? ['ok', 'Built · rebuild redraws the frame'] : ['', 'Not built yet · ' + p.src],
+        items: p.parts.map(function (x) { return [x[0], isUiPart(x[0]) ? 'UI component' : lib ? 'library' : x[1] + ' page', has(x[0])]; }) });
+    }).join('');
+    wireCards($('scrRows'), function (k, v) { S.picked[k] = v; renderScrRows(); renderFooter(); savePrefs(); });
+    $('scrRows').querySelectorAll('[data-tog]').forEach(function (b) {
+      b.onclick = function (e) {   // inside the card's <label>: show/hide only, the card stays ticked or not
+        e.preventDefault(); e.stopPropagation();
+        var k = b.getAttribute('data-tog'); S.openParts[k] = !S.openParts[k];
+        renderScrRows();
+        var again = $('scrRows').querySelector('[data-tog="' + k + '"]'); if (again && again.focus) again.focus();
+      };
+    });
+    var w = $('scrWarn'), msg = '';
+    if (lib) msg = '<div class="callout">' + ic('info') + '<span>Button, AppBar, BottomNav, icons and tokens come from the <b>' + esc(st.lib.file) + '</b> library (keys saved ' + esc(new Date(st.lib.at).toLocaleString()) + '). UI components are built here as this file’s own main components.</span></div>';
+    else if (st && !st.vars) msg = '<div class="callout warn">' + ic('info') + '<span>No tokens in this file and no library keys. Import tokens here, or open the plugin in the DS file and run Export library keys in the Components tab.</span></div>';
+    else if (st && !st.icons.line) msg = '<div class="callout">' + ic('info') + '<span>Icons are not imported, so screens get placeholder icons. Import the Line set first.</span></div>';
+    w.innerHTML = msg; w.hidden = !msg;
+  }
+  function runBuild(list, outId) {
+    var names = list.filter(function (p) { return S.picked[p.key]; }).map(function (p) { return p.key; });
+    if (outId === 'scrOut') {   // the UI components the picked screens use go first, so they are built or updated too
+      var used = {};
+      SCREEN_PAGES.forEach(function (p) { if (S.picked[p.key]) p.parts.forEach(function (x) { used[x[0]] = 1; }); });
+      names = UI_PAGES.filter(function (p) { return used[p.key]; }).map(function (p) { return p.key; }).concat(names.filter(function (k) { return !isUiPart(k); }));
+      if (!SCREEN_PAGES.some(function (p) { return S.picked[p.key]; })) names = [];
+    }
+    if (!names.length) return;
+    S.busy = true; renderFooter();
+    var scrTab = outId === 'scrOut';
+    buildStart(names, scrTab && S.status && !S.status.vars ? S.status.lib : null);
+    B.out = outId; B.screens = scrTab;
+    send({ type: 'build', names: names });
+  }
+  function renderBuild(r) {
+    var h = '';
+    r.notes.forEach(function (x) { h += '<div class="result-line">' + ic('info', 'info-i') + '<span class="muted">' + esc(x) + '</span></div>'; });
+    if (r.missing.length) h += '<div class="result-line">' + ic('x', 'bad-i') + '<span class="err">Missing tokens (shown magenta): ' + esc(r.missing.join(', ')) + '</span></div>';
+    r.errors.forEach(function (e) { h += '<div class="result-line">' + ic('x', 'bad-i') + '<span class="err">' + esc(e) + '</span></div>'; });
+    if (B) { B.notesHtml = h; B.failed = r.errors.length > 0; }
+    buildEnd(!r.errors.length);
+  }
+
+  /* ---------- send to web ---------- */
+  var SY = { diff: null };
+  function syLine(icon, cls, text) { return '<div class="result-line">' + ic(icon, cls) + '<span>' + text + '</span></div>'; }
+  function syShort(v) { var m = /^var\((--[\w-]+)\)$/.exec(v || ''); return m ? m[1] : (v || ''); }
+  function sySw(c) { return c ? '<i class="sy-sw" style="background:' + esc(c) + '"></i>' : ''; }
+  function sySkipped(list) {
+    if (!list || !list.length) return '';
+    return '<details><summary>' + ic('chev') + n(list.length) + ' not sent</summary>' +
+      list.map(function (k) { return '<div class="skip"><code>' + esc(k.name) + '</code><div class="muted">' + esc(k.why) + '</div></div>'; }).join('') + '</details>';
+  }
+  $('syncKey').addEventListener('change', function () { send({ type: 'sync-key', key: $('syncKey').value.trim() }); });
+  $('syncCheck').onclick = function () {
+    var url = $('url').value.trim() || 'https://stat.chara.id/swing/ds/tokens.css';
+    SY.diff = null;
+    $('syncCheck').disabled = true;
+    $('syncOut').innerHTML = '<p class="note">Reading the live tokens.css…</p>';
+    fetch(bust(url, Date.now()), { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function (t) {
+      send({ type: 'sync-diff', css: t, collection: $('col').value.trim() || 'Tokens' });
+    }).catch(function (e) {
+      $('syncCheck').disabled = false;
+      $('syncOut').innerHTML = syLine('x', 'bad-i', '<span class="err">Could not read tokens.css (' + esc(e.message) + ').</span>');
+    });
+  };
+  function renderSyncDiff(r) {
+    $('syncCheck').disabled = false;
+    if (r.error) { $('syncOut').innerHTML = syLine('x', 'bad-i', '<span class="err">' + esc(r.error) + '</span>'); return; }
+    SY.diff = r;
+    if (!r.changes.length) {
+      $('syncOut').innerHTML = syLine('check', 'ok-i', 'This file matches the web. ' + n(r.checked) + ' tokens checked.') + sySkipped(r.skipped);
+      return;
+    }
+    var key = $('syncKey').value.trim();
+    $('syncOut').innerHTML = '<div class="sy-list">' + r.changes.map(function (c) {
+      return '<div class="sy-row"><code title="' + esc(c.name) + '">' + esc(c.name) + '</code><span class="sy-v">' +
+        sySw(c.oldColor) + '<span class="muted">' + esc(syShort(c.old)) + '</span><span class="faint">→</span>' + sySw(c.newColor) + '<b>' + esc(syShort(c.new)) + '</b></span></div>';
+    }).join('') + '</div>' + sySkipped(r.skipped) +
+      '<div class="sy-act"><button class="btn pri sm" id="syncSend"' + (key ? '' : ' disabled') + '>Update ' + n(r.changes.length) + (r.changes.length === 1 ? ' token' : ' tokens') + ' on the web</button></div>' +
+      (key ? '' : '<p class="note">Add your access key above to update. The DS owner makes one for you on the sync page.</p>');
+    if ($('syncSend')) $('syncSend').onclick = syncSend;
+  }
+  function syncSend() {
+    var key = $('syncKey').value.trim(), d = SY.diff;
+    if (!key || !d || !d.changes.length) return;
+    send({ type: 'sync-key', key: key });
+    $('syncSend').disabled = true;
+    $('syncSend').innerHTML = ic('spin', 'spin') + 'Updating…';
+    fetch(dsBase() + 'sync/push.php', {
+      method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({ file: d.file, changes: d.changes.map(function (c) { return { name: c.name, new: c.new }; }) })
+    }).then(function (r) {
+      return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status }; });
+    }).then(function (j) {
+      if (!j.ok) throw new Error(j.error || 'Not updated.');
+      SY.diff = null;
+      var u = j.updated.length;
+      $('syncOut').innerHTML = syLine(u ? 'check' : 'info', u ? 'ok-i' : 'info-i', u
+        ? 'Updated ' + n(u) + (u === 1 ? ' token' : ' tokens') + ' in tokens.css. Publish this library so other files get it. Undo at ' + esc(j.history) + '.'
+        : 'Nothing updated.') + sySkipped(j.skipped);
+    }).catch(function (e) {
+      $('syncOut').innerHTML += syLine('x', 'bad-i', '<span class="err">' + esc(e.message) + '</span>');
+      if ($('syncSend')) { $('syncSend').disabled = false; $('syncSend').textContent = 'Try again'; $('syncSend').onclick = syncSend; }
+    });
+  }
+
+  /* ---------- messages from the plugin ---------- */
+  onmessage = function (e) {
+    var m = e.data.pluginMessage;
+    if (!m) return;
+    if (m.type === 'icons-ack') { if (icAck) { var f = icAck; icAck = null; f(m); } return; }
+    if (m.type === 'build-page') { buildPage(m.page); return; }
+    if (m.type === 'build-progress') { buildTick(m); return; }
+    if (m.type === 'sync-key') { $('syncKey').value = m.key || ''; return; }
+    if (m.type === 'sync-diff') { renderSyncDiff(m.result || {}); return; }
+    if (m.type === 'prefs') {
+      var p = m.prefs || {};
+      if (p.url && p.url.trim()) $('url').value = p.url;   // an empty saved URL keeps the default DS tokens.css
+      if (p.collection) $('col').value = p.collection;
+      if (p.picked) S.picked = Object.assign(S.picked, p.picked);
+      if (p.opt) S.opt = Object.assign(S.opt, p.opt);
+      if (p.icSets) S.icSets = Object.assign(S.icSets, p.icSets);
+      renderCounts(); renderIconRows();
+      renderCmpRows(); renderScrRows();
+      setStep(p.step || 'tokens');
+      if (!$('css').value && $('url').value.trim()) $('fetch').click();   // fetch on open, so the counts show right away
+      else $('cssBox').open = true;
+      return;
+    }
+    if (m.type === 'status') { S.status = m.status; renderSteps(); renderIconRows(); renderCmpRows(); renderScrRows(); renderFooter(); return; }
+    if (m.type === 'summary') { S.summary = m.summary; renderCounts(); renderFooter(); return; }
+    if (m.type === 'done') { S.busy = false; S.summary = m.summary; renderCounts(); renderTokResult(m.result); renderFooter(); return; }
+    if (m.type === 'icons-done') {
+      S.busy = false;
+      var r = m.result;
+      if (r) icProgress(icTotal || 1, icTotal || 1, n(r.made) + ' created · ' + n(r.skipped) + ' already in file' + (r.failedCount ? ' · ' + r.failedCount + ' failed: ' + r.failed.slice(0, 3).join('; ') : ''), r.failedCount ? 'bad' : 'done');
+      renderFooter();
+      return;
+    }
+    if (m.type === 'build-done') { S.busy = false; renderBuild(m.result); renderFooter(); return; }
+    if (m.type === 'keys-done') {
+      $('libExport').disabled = false;
+      var kr = m.result;
+      S.keysMsg = m.error ? 'Not exported: ' + m.error
+        : 'Saved ' + n(kr.sets) + ' sets, ' + n(kr.comps) + ' components, ' + n(kr.vars) + ' variables and ' + n(kr.styles) + ' styles from ' + kr.file + '. Make sure they are published, then open the plugin in the file that uses this library and build a screen there.';
+      $('libMsg').textContent = S.keysMsg;
+      return;
+    }
+    if (m.type === 'error') {
+      S.busy = false;
+      $('tokOut').hidden = false;
+      $('tokOut').innerHTML = '<div class="result-line">' + ic('x', 'bad-i') + '<span class="err">' + esc(m.message) + '</span></div>';
+      renderFooter();
+    }
+  };
+  renderCounts(); renderFooter();
+  // The page itself must never scroll (only <main> does). Undo any scroll a focus or anchor causes.
+  function pinPage() { if (document.scrollingElement && document.scrollingElement.scrollTop) document.scrollingElement.scrollTop = 0; if (document.body.scrollTop) document.body.scrollTop = 0; }
+  window.addEventListener('scroll', pinPage, true);
+  document.addEventListener('focusin', function () { setTimeout(pinPage, 0); });
+  window.S = S; window.renderIconRows = renderIconRows;
+</script>
+</body>
+</html>
