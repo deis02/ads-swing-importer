@@ -289,7 +289,8 @@
       </details>
     </div>
     <div class="sec" id="tokOut" hidden></div>
-    <div class="sec" id="syncSec">
+    <!-- Send to web is hidden. To bring it back, remove the hidden attribute below. The server side under /swing/ds/sync/ still runs. -->
+    <div class="sec" id="syncSec" hidden>
       <div class="sec-h">Send to web <span class="muted">Figma → tokens.css</span></div>
       <p class="note sy-intro">Changed a variable in this file? Compare it with the live tokens.css and update the web in one click. Every update is backed up and can be undone on the DS sync page.</p>
       <div class="inline"><label class="muted" for="syncKey">Access key</label><input class="field" type="password" id="syncKey" placeholder="sds_…" autocomplete="off" spellcheck="false"></div>
