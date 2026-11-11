@@ -74,25 +74,25 @@ Nama di Figma = nama di kode, jadi developer bisa baca instance terus langsung n
 
 | Figma | Kode |
 |---|---|
-| `Button` · `size` xl / l / m / s / xs | `.btn--xl` / `.btn` (tanpa class) / `.btn--m` / `.btn--s` / `.btn--xs` |
-| `tone` primary / neutral / danger / success | tanpa class / `.btn--neutral` / `.btn--danger` / `.btn--success` |
-| `appearance` solid / soft / ghost / tertiary | tanpa class / `.btn--soft` / `.btn--ghost` / `.btn--tertiary` |
+| `Button` · `size` xl / l / m / s / xs | `.swing_btn_xl` / `.swing_btn` (tanpa class) / `.swing_btn_m` / `.swing_btn_s` / `.swing_btn_xs` |
+| `tone` primary / neutral / danger / success | tanpa class / `.swing_btn_neutral` / `.swing_btn_danger` / `.swing_btn_success` |
+| `appearance` solid / soft / ghost / tertiary | tanpa class / `.swing_btn_soft` / `.swing_btn_ghost` / `.swing_btn_tertiary` |
 | `state` pressed / disabled / loading | `:active` atau `.is-pressed` / `disabled` / `aria-busy="true"` + loader |
-| `label`, `showIconStart` + `iconStart`, `showIconEnd` + `iconEnd` | teks tombol, `<i class="icon">` sebelum / sesudahnya |
-| `IconButton` · `icon` | `.btn.btn--icon` + `aria-label` |
-| `SlideConfirm` · `tone` primary / danger · `state` dragging / loading / disabled · `label`, `busyLabel` | `.slide-confirm`, `--danger`, `.is-dragging`, `.is-done` + `aria-busy`, `aria-disabled`, `data-busy-label` |
-| `SwingLoader` · `size` 16 / 24 / 48 / 96 | `.swing-loader`, `--24`, `--96` |
+| `label`, `showIconStart` + `iconStart`, `showIconEnd` + `iconEnd` | teks tombol, `<i class="swing_icon">` sebelum / sesudahnya |
+| `IconButton` · `icon` | `.swing_btn.btn--icon` + `aria-label` |
+| `SlideConfirm` · `tone` primary / danger · `state` dragging / loading / disabled · `label`, `busyLabel` | `.swing_slide_confirm`, `--danger`, `.is-dragging`, `.is-done` + `aria-busy`, `aria-disabled`, `data-busy-label` |
+| `SwingLoader` · `size` 16 / 24 / 48 / 96 | `.swing_loader`, `--24`, `--96` |
 
-- **Button** (240): semua di atas, kombinasinya ngikutin DS (success cuma solid, tertiary cuma primary/neutral). Buat full width (`.btn--block`), set width instance ke Fill.
+- **Button** (240): semua di atas, kombinasinya ngikutin DS (success cuma solid, tertiary cuma primary/neutral). Buat full width (`.swing_btn_block`), set width instance ke Fill.
 - **IconButton** (180): kotak, icon 24 di xl, 20 di l/m, 16 di s/xs, state default / pressed / disabled.
 - **SlideConfirm** (8): lebar 342 (set instance ke Fill), dragging ditampilin di 50%.
 - **SwingLoader** (4, page Loading): mark statis; di web dianimasikan.
 
 Hasil build dengan nama lama di-rename di tempat: component-nya sama, instance-nya tetap nyambung.
 
-- **Badge** (48, page Badge): `tone` neutral / primary / success / warning / danger / info / teal / pink · `appearance` soft / solid / dot · `size` m / s · `label`, `showIcon` + `icon`. Kode: `.badge--{tone} .badge--{appearance} .badge--s`.
+- **Badge** (48, page Badge): `tone` neutral / primary / success / warning / danger / info / teal / pink · `appearance` soft / solid / dot · `size` m / s · `label`, `showIcon` + `icon`. Kode: `.swing_badge_{tone} .swing_badge_{appearance} .swing_badge_s`.
 - **Counter** (12, `placement` inline / corner) · `tone` danger / primary / neutral · `size` 20 / 16 · `count`. **Indicator** (2): titik 8px.
-- **Tag** (64, page Tag): `tone` neutral / primary / teal / pink / orange / green / red / on-media · `size` m / s · `state` default / pressed / selected / disabled · `label`, `showIconStart` + `iconStart`, `showCounter`, `showChevron`, `showRemove`. Kode: `.tag--{tone} .tag--s`, selected = `aria-pressed="true"`. Beda yang diketahui: di CSS padding samping dikurangin 4 kalau ada icon; Figma nggak bisa, jadi tag yang pakai icon 4px lebih lebar per sisi.
+- **Tag** (64, page Tag): `tone` neutral / primary / teal / pink / orange / green / red / on-media · `size` m / s · `state` default / pressed / selected / disabled · `label`, `showIconStart` + `iconStart`, `showCounter`, `showChevron`, `showRemove`. Kode: `.swing_tag_{tone} .swing_tag_s`, selected = `aria-pressed="true"`. Beda yang diketahui: di CSS padding samping dikurangin 4 kalau ada icon; Figma nggak bisa, jadi tag yang pakai icon 4px lebih lebar per sisi.
 
 Semua page (satu page per grup component, tiap set di artboard sendiri lengkap dengan markup kodenya). Set yang di CSS-nya tersusun dari component lain pakai instance asli (Card isinya Button sama Badge, Sheet isinya Option sama Select), jadi ubah component dasarnya, yang lain ikut ke-update.
 
@@ -142,7 +142,7 @@ Button punya `size=glow` (padding 12 16 dari token, tinggi HUG = 44, radius 12, 
 - `glow`: glass + garis glass-line, label putih. Buat latar ungu, gelap, atau foto.
 - `glowPurple`: glass tanpa garis, label Dark 500. Buat latar terang.
 
-Tiap variant punya layer `glow`: mask cincin 1,5px plus `sheen` di atasnya. Untuk tone `glow`, `sheen` itu kotak 320 dengan gradient angular putih. Untuk `glowPurple`, ukurannya 276 x 161, isinya gradient linear Purple 500 dari 0% di 25% sampai 100%. Disabled nggak punya glow. Di web, class-nya `.btn--glow` / `.btn--glow.btn--glow-purple`.
+Tiap variant punya layer `glow`: mask cincin 1,5px plus `sheen` di atasnya. Untuk tone `glow`, `sheen` itu kotak 320 dengan gradient angular putih. Untuk `glowPurple`, ukurannya 276 x 161, isinya gradient linear Purple 500 dari 0% di 25% sampai 100%. Disabled nggak punya glow. Di web, class-nya `.swing_btn_glow` / `.swing_btn_glow.btn--glow-purple`.
 
 Plugin nggak bisa ngisi keyframe. Jadi abis build, buka Motion, pilih `sheen`, terus set Rotation 0 di 0 ms dan -360 di 2000 ms, ease in-out, Loop. Kalau Button di-Update, keyframe-nya perlu dipasang ulang.
 

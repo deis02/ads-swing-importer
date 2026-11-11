@@ -74,25 +74,25 @@ Names in Figma are the names in code, so a developer can read an instance and wr
 
 | Figma | Code |
 |---|---|
-| `Button` · `size` xl / l / m / s / xs | `.btn--xl` / `.btn` (no class) / `.btn--m` / `.btn--s` / `.btn--xs` |
-| `tone` primary / neutral / danger / success | no class / `.btn--neutral` / `.btn--danger` / `.btn--success` |
-| `appearance` solid / soft / ghost / tertiary | no class / `.btn--soft` / `.btn--ghost` / `.btn--tertiary` |
+| `Button` · `size` xl / l / m / s / xs | `.swing_btn_xl` / `.swing_btn` (no class) / `.swing_btn_m` / `.swing_btn_s` / `.swing_btn_xs` |
+| `tone` primary / neutral / danger / success | no class / `.swing_btn_neutral` / `.swing_btn_danger` / `.swing_btn_success` |
+| `appearance` solid / soft / ghost / tertiary | no class / `.swing_btn_soft` / `.swing_btn_ghost` / `.swing_btn_tertiary` |
 | `state` pressed / disabled / loading | `:active` or `.is-pressed` / `disabled` / `aria-busy="true"` + loader |
-| `label`, `showIconStart` + `iconStart`, `showIconEnd` + `iconEnd` | button text, `<i class="icon">` before / after it |
-| `IconButton` · `icon` | `.btn.btn--icon` + `aria-label` |
-| `SlideConfirm` · `tone` primary / danger · `state` dragging / loading / disabled · `label`, `busyLabel` | `.slide-confirm`, `--danger`, `.is-dragging`, `.is-done` + `aria-busy`, `aria-disabled`, `data-busy-label` |
-| `SwingLoader` · `size` 16 / 24 / 48 / 96 | `.swing-loader`, `--24`, `--96` |
+| `label`, `showIconStart` + `iconStart`, `showIconEnd` + `iconEnd` | button text, `<i class="swing_icon">` before / after it |
+| `IconButton` · `icon` | `.swing_btn.btn--icon` + `aria-label` |
+| `SlideConfirm` · `tone` primary / danger · `state` dragging / loading / disabled · `label`, `busyLabel` | `.swing_slide_confirm`, `--danger`, `.is-dragging`, `.is-done` + `aria-busy`, `aria-disabled`, `data-busy-label` |
+| `SwingLoader` · `size` 16 / 24 / 48 / 96 | `.swing_loader`, `--24`, `--96` |
 
-- **Button** (240): all of the above, combined as the DS allows (success is solid only, tertiary is primary/neutral only). For full width (`.btn--block`), set the instance width to Fill.
+- **Button** (240): all of the above, combined as the DS allows (success is solid only, tertiary is primary/neutral only). For full width (`.swing_btn_block`), set the instance width to Fill.
 - **IconButton** (180): square, icon 24 in xl, 20 in l/m, 16 in s/xs, states default / pressed / disabled.
 - **SlideConfirm** (8): 342 wide (set the instance to Fill), dragging shown at 50%.
 - **SwingLoader** (4, page Loading): static mark; on the web it animates.
 
 Builds from before this naming are renamed in place: same components, same instances.
 
-- **Badge** (48, page Badge): `tone` neutral / primary / success / warning / danger / info / teal / pink · `appearance` soft / solid / dot · `size` m / s · `label`, `showIcon` + `icon`. Code: `.badge--{tone} .badge--{appearance} .badge--s`.
+- **Badge** (48, page Badge): `tone` neutral / primary / success / warning / danger / info / teal / pink · `appearance` soft / solid / dot · `size` m / s · `label`, `showIcon` + `icon`. Code: `.swing_badge_{tone} .swing_badge_{appearance} .swing_badge_s`.
 - **Counter** (12, `placement` inline / corner) · `tone` danger / primary / neutral · `size` 20 / 16 · `count`. **Indicator** (2): the 8px dot.
-- **Tag** (64, page Tag): `tone` neutral / primary / teal / pink / orange / green / red / on-media · `size` m / s · `state` default / pressed / selected / disabled · `label`, `showIconStart` + `iconStart`, `showCounter`, `showChevron`, `showRemove`. Code: `.tag--{tone} .tag--s`, selected = `aria-pressed="true"`. Known gap: CSS trims the side padding by 4 next to an icon; Figma cannot, so those tags are 4px wider per side.
+- **Tag** (64, page Tag): `tone` neutral / primary / teal / pink / orange / green / red / on-media · `size` m / s · `state` default / pressed / selected / disabled · `label`, `showIconStart` + `iconStart`, `showCounter`, `showChevron`, `showRemove`. Code: `.swing_tag_{tone} .swing_tag_s`, selected = `aria-pressed="true"`. Known gap: CSS trims the side padding by 4 next to an icon; Figma cannot, so those tags are 4px wider per side.
 
 All pages (one page per component group, each set on its own artboard with the code markup). Sets that the CSS composes use real instances of the smaller ones (a Card holds a Button and a Badge, a Sheet holds Option and Select rows), so changing a base component updates them.
 
@@ -142,7 +142,7 @@ Button has `size=glow` (padding 12 16 from tokens, height hugs to 44, radius 12,
 - `glow`: glass + glass line, white label, for purple, dark or photo backgrounds.
 - `glowPurple`: glass with no line, Dark 500 label, for light backgrounds.
 
-Each variant has a `glow` layer: a 1.5px ring mask with `sheen` above it (white: 320 angular; purple: 276 x 161 linear, Purple 500 0% at 25% to 100%). Disabled has no glow. On the web: `.btn--glow` / `.btn--glow.btn--glow-purple`.
+Each variant has a `glow` layer: a 1.5px ring mask with `sheen` above it (white: 320 angular; purple: 276 x 161 linear, Purple 500 0% at 25% to 100%). Disabled has no glow. On the web: `.swing_btn_glow` / `.swing_btn_glow.btn--glow-purple`.
 
 Plugins cannot write keyframes: after a build, open Motion, select `sheen`, Rotation 0 at 0 ms and -360 at 2000 ms, ease in-out, Loop. Updating Button means adding them again.
 
