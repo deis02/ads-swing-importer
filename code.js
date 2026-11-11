@@ -722,7 +722,7 @@ function analyze(css) {
     var m = v.type === 'COLOR' && v.css.match(/^--([a-z]+)-\d+$/);
     if (m && m[1] !== 'color') steps[m[1]] = (steps[m[1]] || 0) + 1;
   });
-  Object.keys(steps).forEach(function (k) { if (steps[k] >= 3) ramps[k] = true; });
+  wireKeys(steps).forEach(function (k) { if (steps[k] >= 3) ramps[k] = true; });
   // A ramp's role comes from the semantic tokens that point at it:
   // --color-primary -> purple = Primary, --color-success -> green = Status, --color-text -> dark = Neutral.
   // Ramps nobody points at are Secondary.
@@ -909,7 +909,7 @@ async function loadRegistry() {
     if (val && val.type === 'VARIABLE_ALIAS') return resolved(byId[val.id], depth + 1);
     return val && typeof val === 'object' && 'r' in val ? val : null;
   }
-  Object.keys(R.vars).forEach(function (k) { if (R.vars[k].resolvedType === 'COLOR') R.color[k] = resolved(R.vars[k], 0); });
+  wireKeys(R.vars).forEach(function (k) { if (R.vars[k].resolvedType === 'COLOR') R.color[k] = resolved(R.vars[k], 0); });
   (await figma.getLocalTextStylesAsync()).forEach(function (s) { if (/^--/.test(s.description)) R.text[s.description.split('\n')[0]] = s; });
   (await figma.getLocalEffectStylesAsync()).forEach(function (s) { if (/^--/.test(s.description)) R.effects[s.description.split('\n')[0]] = s; });
   R.v = function (css) { var v = R.vars[css]; if (!v) R.missing[css] = 1; return v || null; };
@@ -1047,7 +1047,17 @@ async function libComponent(name) {
   return LIB_CACHE['c:' + k];
 }
 async function libSet(setName, pageName) {
+  var names = (LIB.logical || {})[setName];
+  if (names && names.length) {
+    var got = [];
+    for (var i = 0; i < names.length; i++) got.push(await libSetOne(names[i], pageName, setName));
+    return names.length > 1 || (LIB.split || {})[setName] ? splitView(setName, got) : got[0];
+  }
+  return libSetOne(setName, pageName);
+}
+async function libSetOne(setName, pageName, logical) {
   var s = LIB.sets[setName];
+  if (logical) setName = setName + ' (' + logical + ')';   // swing_app_bar_home (AppBar): name the part the screen asked for too
   if (!s) throw new Error(setName + ' is not in the library keys. Build the ' + pageName + ' page in the DS file, publish the library, then run Export library keys there again.');
   if (!LIB_CACHE['s:' + s.key]) {
     figma.ui.postMessage({ type: 'build-progress', set: 'Library: ' + setName, done: 0, total: 1, phase: 'variants' });
@@ -1060,24 +1070,29 @@ async function libSet(setName, pageName) {
 async function exportLibraryKeys() {
   var R = await loadRegistry();
   if (!Object.keys(R.vars).length) throw new Error('This file has no tokens, so it is not the DS file. Run Export library keys in the file that has the DS pages.');
-  var out = { v: 1, file: figma.root.name, at: Date.now(), sets: {}, comps: {}, vars: {}, color: {}, text: {}, effects: {}, paints: {} };
+  var out = { v: 2, file: figma.root.name, at: Date.now(), sets: {}, logical: {}, split: {}, comps: {}, vars: {}, color: {}, text: {}, effects: {}, paints: {} };
   for (var i = 0; i < figma.root.children.length; i++) {
     var pg = figma.root.children[i];
     if (/^Screen \//.test(pg.name) || UI_PARTS[pg.name]) continue;   // screens and UI components are not base library parts
     await pg.loadAsync();
-    pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { if (!out.sets[s.name]) out.sets[s.name] = { key: s.key, page: pg.name }; });
+    pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) {
+      if (out.sets[s.name]) return;
+      out.sets[s.name] = { key: s.key, page: pg.name };
+      var t = setTag(s);   // swing names: the code asks for the logical part (Button) and gets every kind
+      if (t.logical) { (out.logical[t.logical] = out.logical[t.logical] || []).push(s.name); if (t.prop) out.split[t.logical] = t.prop; }
+    });
     pg.findAllWithCriteria({ types: ['COMPONENT'] }).forEach(function (c) {
       if (c.parent && c.parent.type === 'COMPONENT_SET') return;
       if (!out.comps[c.name]) out.comps[c.name] = c.key;
     });
   }
   // per-style typography variables ride inside the text styles, so a library file does not import them one by one
-  Object.keys(R.vars).forEach(function (k) { if (/:(size|line-height|letter-spacing)$/.test(k)) return; out.vars[k] = R.vars[k].key; if (R.color[k]) out.color[k] = R.color[k]; });
-  Object.keys(R.text).forEach(function (k) { out.text[k] = R.text[k].key; });
-  Object.keys(R.effects).forEach(function (k) { out.effects[k] = R.effects[k].key; });
+  wireKeys(R.vars).forEach(function (k) { if (/:(size|line-height|letter-spacing)$/.test(k)) return; out.vars[k] = R.vars[k].key; if (R.color[k]) out.color[k] = R.color[k]; });
+  wireKeys(R.text).forEach(function (k) { out.text[k] = R.text[k].key; });
+  wireKeys(R.effects).forEach(function (k) { out.effects[k] = R.effects[k].key; });
   var lps = await figma.getLocalPaintStylesAsync(), pnames = {};
   lps.forEach(function (s) { var k = (s.description || '').split('\n')[0]; if (/^--/.test(k)) out.paints[k] = s.key; pnames[s.name] = s.key; });
-  Object.keys(PAINT_NAMES).forEach(function (css) { if (pnames[PAINT_NAMES[css]]) out.paints[css] = pnames[PAINT_NAMES[css]]; });
+  wireKeys(PAINT_NAMES).forEach(function (css) { if (pnames[PAINT_NAMES[css]]) out.paints[css] = pnames[PAINT_NAMES[css]]; });
   await figma.clientStorage.setAsync('libKeys', out);
   return { file: out.file, sets: Object.keys(out.sets).length, comps: Object.keys(out.comps).length, vars: Object.keys(out.vars).length,
     styles: Object.keys(out.text).length + Object.keys(out.effects).length + Object.keys(out.paints).length };
@@ -1140,25 +1155,110 @@ function ensureProp(set, name, type, def, legacy) {
   return set.addComponentProperty(name, type, def);
 }
 
+/* ----- Swing names (Ghais 11 Nov) -----
+   Every component set is named swing_<part> in snake case: Button -> swing_btn, TextField -> swing_text_field,
+   Home/ProductCard -> Home/swing_product_card (the screen folder stays, it groups the Assets panel).
+   A set with a kind property (tone, type, kind or control, more than one value) is split into one set per kind:
+   Button -> swing_btn_primary, swing_btn_neutral, ... The variant names inside keep the kind (tone=primary),
+   so the code below that finds a variant by its full name keeps working, and the kind still reads in Dev Mode.
+   Each set carries plugin data { logical, prop, value }: the code keeps asking for "Button" and gets every kind. */
+var SWING_BASE = { Button: 'btn', IconButton: 'icon_btn', SwingLoader: 'loader', SwingPass: 'pass' };
+var SPLIT_PROPS = ['tone', 'type', 'kind', 'control'];
+function snakeName(s) { return String(s).replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase(); }
+function swingBase(logical) {
+  var parts = String(logical).split('/'), b = parts.pop();
+  if (/^swing_/.test(b)) return logical;
+  parts.push('swing_' + (SWING_BASE[b] || snakeName(b)));
+  return parts.join('/');
+}
+function variantValue(vname, prop) {
+  var kv = String(vname).split(',').map(function (s) { return s.trim().split('='); }).filter(function (p) { return p[0] === prop; })[0];
+  return kv ? kv[1] : null;
+}
+function splitPropOf(setName, variants) {
+  for (var i = 0; i < SPLIT_PROPS.length; i++) {
+    var seen = {}, n = 0;
+    variants.forEach(function (v) { var x = variantValue(v.name, SPLIT_PROPS[i]); if (x !== null && !seen[x]) { seen[x] = 1; n++; } });
+    if (n > 1 && variants.every(function (v) { return variantValue(v.name, SPLIT_PROPS[i]) !== null; })) return SPLIT_PROPS[i];
+  }
+  return null;
+}
+function setTag(s) { try { return JSON.parse(s.getPluginData('swing') || '{}'); } catch (e) { return {}; } }
+function tagSet(s, logical, prop, value) { s.setPluginData('swing', JSON.stringify({ logical: String(logical).split('/').pop(), prop: prop, value: value })); }
+// The sets of one logical part, as one object: children are every variant of every kind (full names).
+function splitView(logical, sets) {
+  return { __split: true, logical: logical, name: swingBase(logical), sets: sets, type: 'SPLIT_VIEW',
+    get children() { return [].concat.apply([], sets.map(function (s) { return s.children; })); },
+    get parent() { return sets[0] && sets[0].parent; },
+    get description() { return sets[0] ? sets[0].description : ''; },
+    set description(d) { sets.forEach(function (s) { s.description = d; }); },
+    findChild: function (f) { return this.children.filter(f)[0] || null; },
+    findOne: function (f) { for (var i = 0; i < sets.length; i++) { var r = sets[i].findOne(f); if (r) return r; } return null; },
+    findAll: function (f) { return [].concat.apply([], sets.map(function (s) { return s.findAll(f); })); } };
+}
+function firstSetOf(s) { return s && s.__split ? s.sets[0] : s; }
+// Is this variant one of the part's (any of its kinds, when the part is split)?
+function inPart(comp, set) { return !!comp && !!set && (set.__split ? set.sets.indexOf(comp.parent) >= 0 : comp.parent === set); }
+// Find the set(s) of a logical part on a page: tagged sets first, then an untagged set built before the rename.
+function findLogical(pg, logical, alt) {
+  var base = String(logical).split('/').pop();
+  var all = pg.findAllWithCriteria({ types: ['COMPONENT_SET'] });
+  var tagged = all.filter(function (n) { return setTag(n).logical === base; });
+  if (tagged.length) return tagged.length > 1 || setTag(tagged[0]).prop ? splitView(logical, tagged) : tagged[0];
+  var names = [logical, swingBase(logical), base, alt].filter(Boolean);
+  return all.filter(function (n) { return names.indexOf(n.name) >= 0; })[0] || null;
+}
+
 // Builds or updates a component set. Variants are matched by name, so instances
 // that already use them stay linked when the set is rebuilt.
+// A set with a kind property is built as one set per kind (see Swing names): the result is then a split view.
 async function buildSet(page, setName, variants, buildVariant, wire, layout, R, legacySetName) {
-  var set = page.findOne(function (n) { return n.type === 'COMPONENT_SET' && (n.name === setName || (legacySetName && n.name === legacySetName)); });
+  var prop = splitPropOf(setName, variants);
+  var olds = [setName, swingBase(setName), legacySetName].filter(Boolean);
+  var old = page.findOne(function (n) { return n.type === 'COMPONENT_SET' && olds.indexOf(n.name) >= 0 && !setTag(n).prop; });
+  if (!prop) {
+    var r1 = await buildOneSet(page, swingBase(setName), variants, buildVariant, R, old, old, setName);
+    tagSet(r1.set, setName, null, null);
+    wireIn(r1.set, wire, layout, r1.comps);
+    return r1.set;
+  }
+  var order = [], by = {};
+  variants.forEach(function (v) { var x = variantValue(v.name, prop); if (!by[x]) { by[x] = []; order.push(x); } by[x].push(v); });
+  var sets = [];
+  for (var g = 0; g < order.length; g++) {
+    var name = swingBase(setName) + '_' + snakeName(order[g]);
+    var mine = page.findOne(function (n) { return n.type === 'COMPONENT_SET' && (n.name === name || (setTag(n).logical === String(setName).split('/').pop() && setTag(n).value === order[g])); });
+    // the first kind keeps the set from before the split (renamed): its property keys stay, so overrides on placed instances of that kind stay
+    var reuse = !mine && g === 0 && old ? old : null;
+    var r = await buildOneSet(page, name, by[order[g]], buildVariant, R, mine || reuse, mine || old, name);
+    tagSet(r.set, setName, prop, order[g]);
+    wireIn(r.set, wire, layout, r.comps);   // wire only reaches the variants of this set (wireKeys)
+    sets.push(r.set);
+  }
+  // the set from before the split, when it was not reused: every variant moved out, so it is empty now (Figma may already have removed it)
+  try { if (old && sets.indexOf(old) < 0 && !old.removed && !old.children.length) old.remove(); } catch (e) { /* already gone */ }
+  return splitView(setName, sets);
+}
+// One set. `set` is this set when it exists already; `from` is where existing variants are looked up
+// (this set on an update, the set from before the split the first time a part is split).
+async function buildOneSet(page, setName, variants, buildVariant, R, set, from, label) {
   if (set) set.name = setName;
   var comps = [], lastPost = 0;
   function progress(done, phase) {
     var now = Date.now();
     if (phase !== 'variants' || done === variants.length || now - lastPost > 60) {
       lastPost = now;
-      figma.ui.postMessage({ type: 'build-progress', set: setName, done: done, total: variants.length, phase: phase });
+      figma.ui.postMessage({ type: 'build-progress', set: label || setName, done: done, total: variants.length, phase: phase });
     }
   }
   progress(0, 'variants');
   for (var i = 0; i < variants.length; i++) {
-    var vname = variants[i].name, old = variants[i].legacy;
-    var comp = set && (set.findChild(function (c) { return c.name === vname; }) || (old && set.findChild(function (c) { return c.name === old; })));
-    if (comp) { comp.name = vname; comp.children.slice().forEach(function (c) { c.remove(); }); }
-    else { comp = figma.createComponent(); page.appendChild(comp); comp.name = vname; }
+    var vname = variants[i].name, oldName = variants[i].legacy;
+    var comp = from && (from.findChild(function (c) { return c.name === vname; }) || (oldName && from.findChild(function (c) { return c.name === oldName; })));
+    if (comp) {
+      comp.name = vname; comp.children.slice().forEach(function (c) { c.remove(); });
+      if (from !== set) page.appendChild(comp);   // moving out of the pre-split set: the component node stays, so instances stay linked
+    } else { comp = figma.createComponent(); page.appendChild(comp); comp.name = vname; }
     await buildVariant(comp, variants[i]);
     comps.push(comp);
     progress(i + 1, 'variants');
@@ -1174,10 +1274,26 @@ async function buildSet(page, setName, variants, buildVariant, wire, layout, R, 
     comps.forEach(function (c) { if (c.parent !== set) set.appendChild(c); });
   }
   if (R) set.fills = paintFor(R, '--color-bg-subtle');
-  wire(set, comps);
-  layout(set, comps);
-  return set;
+  return { set: set, comps: comps };
 }
+// While a set is being wired (WIRE_SET), wireKeys skips map entries whose node sits in ANOTHER component set:
+// a split part calls wire once per kind, and a property can only be bound inside its own set.
+// Outside wire (WIRE_SET null) it is exactly Object.keys.
+var WIRE_SET = null;
+function wireKeys(map) {
+  var ks = Object.keys(map);
+  if (!WIRE_SET) return ks;
+  function firstNode(e) {
+    if (!e || typeof e !== 'object') return null;
+    if (e.type && 'parent' in e) return e;
+    if (Array.isArray(e)) return e.length && e[0] && typeof e[0] === 'object' && e[0].type && 'parent' in e[0] ? e[0] : null;
+    for (var k in e) { var x = e[k]; if (x && typeof x === 'object' && x.type && 'parent' in x) return x; }
+    return null;
+  }
+  function elsewhere(n) { for (var p = n; p; p = p.parent) { if (p === WIRE_SET) return false; if (p.type === 'COMPONENT_SET') return true; } return false; }
+  return ks.filter(function (k) { var n = firstNode(map[k]); return !n || !elsewhere(n); });
+}
+function wireIn(set, wire, layout, comps) { WIRE_SET = set; try { wire(set, comps); layout(set, comps); } finally { WIRE_SET = null; } }
 
 // A failed build can leave variant components loose on whatever page was open.
 // Remove those (only loose ones matching this set's variant names, and only if nothing uses them).
@@ -1214,9 +1330,42 @@ async function makeText(R, styleCss, colorCss, chars, parent) {
 }
 
 async function docArtboard(R, page, set, comps, variants, spec) {
+  if (!set.__split) return docArtboardOne(R, page, set, comps, variants, Object.assign({}, spec, { title: set.name || spec.title, oldTitle: spec.title }));
+  var res = null;
+  for (var si = 0; si < set.sets.length; si++) {
+    var s = set.sets[si], cs = [], vs = [];
+    comps.forEach(function (c, i) { if (c.parent === s) { cs.push(c); vs.push(variants[i]); } });
+    if (!cs.length) continue;
+    // only the row and column groups this kind uses, renumbered
+    var P0 = vs.map(function (v) { return spec.place(v); });
+    var cgs = [], rgs = [], cols = {}, rows = {};
+    P0.forEach(function (p) {
+      if (cgs.indexOf(p.cg) < 0) cgs.push(p.cg);
+      if (rgs.indexOf(p.rg) < 0) rgs.push(p.rg);
+      (cols[p.cg] = cols[p.cg] || []).indexOf(p.c) < 0 && cols[p.cg].push(p.c);
+      (rows[p.rg] = rows[p.rg] || []).indexOf(p.r) < 0 && rows[p.rg].push(p.r);
+    });
+    var num = function (a, b) { return a - b; };
+    cgs.sort(num); rgs.sort(num); wireKeys(cols).forEach(function (k) { cols[k].sort(num); }); wireKeys(rows).forEach(function (k) { rows[k].sort(num); });
+    var sub = Object.assign({}, spec, {
+      title: s.name, legacyTitle: null,
+      colGroups: cgs.map(function (g) { return { label: spec.colGroups[g].label, cols: cols[g].map(function (c) { return spec.colGroups[g].cols[c]; }) }; }),
+      rowGroups: rgs.map(function (g) { return { label: spec.rowGroups[g].label, rows: rows[g].map(function (r) { return spec.rowGroups[g].rows[r]; }) }; }),
+      place: function (v) { var p = spec.place(v); return { cg: cgs.indexOf(p.cg), c: cols[p.cg].indexOf(p.c), rg: rgs.indexOf(p.rg), r: rows[p.rg].indexOf(p.r) }; }
+    });
+    if (spec.examples) sub.examples = spec.examples.map(function (E) { return Object.assign({}, E, { items: E.items.filter(function (it) { return s.children.some(function (c) { return c.name === it.variant; }); }) }); }).filter(function (E) { return E.items.length; });
+    res = await docArtboardOne(R, page, s, cs, vs, sub);
+  }
+  // the artboard from before the split held the one set: drop it once it holds no set
+  page.findChildren(function (n) { return n.type === 'FRAME' && (n.name === spec.title || n.name === spec.legacyTitle); }).forEach(function (f) {
+    if (!f.findOne(function (n) { return n.type === 'COMPONENT_SET'; })) f.remove();
+  });
+  return res;
+}
+async function docArtboardOne(R, page, set, comps, variants, spec) {
   var P = 64, LABEL_W = 176, CELL_GAP = 24, GROUP_GAP_X = 56, ROW_GAP = 16, GROUP_BAND = 40, GROUP_GAP_Y = 40, SET_PAD = 24;
 
-  var frame = page.findChild(function (n) { return n.type === 'FRAME' && (n.name === spec.title || (spec.legacyTitle && n.name === spec.legacyTitle)); });
+  var frame = page.findChild(function (n) { return n.type === 'FRAME' && (n.name === spec.title || (spec.legacyTitle && n.name === spec.legacyTitle) || (spec.oldTitle && n.name === spec.oldTitle)); });
   if (frame) frame.name = spec.title;
   if (!frame) {
     frame = figma.createFrame();
@@ -1445,11 +1594,11 @@ function btnColors(tone, appear, state) {
 
 function buttonVariants(states, isIcon) {
   var out = [];
-  Object.keys(BTN_TONES).forEach(function (tone) {
+  wireKeys(BTN_TONES).forEach(function (tone) {
     if (isIcon && BTN_TONES[tone].noIcon) return;
     BTN_APPEAR.forEach(function (appear) {
       if (!BTN_TONES[tone][appear]) return;
-      Object.keys(BTN_SIZES).forEach(function (size) {
+      wireKeys(BTN_SIZES).forEach(function (size) {
         if (BTN_TONES[tone].sizes && BTN_TONES[tone].sizes.indexOf(size) < 0) return;
         if (BTN_SIZES[size].tones && BTN_SIZES[size].tones.indexOf(tone) < 0) return;
         states.forEach(function (state) {
@@ -1659,7 +1808,7 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
   function wire(set) {
     if (isIcon) {
       var pIcon = ensureProp(set, 'icon', 'INSTANCE_SWAP', icons.share.id, 'Icon');
-      Object.keys(parts).forEach(function (k) { parts[k].icon.componentPropertyReferences = { mainComponent: pIcon }; });
+      wireKeys(parts).forEach(function (k) { parts[k].icon.componentPropertyReferences = { mainComponent: pIcon }; });
       set.description = '<button class="btn btn--icon btn--{tone} btn--{appearance} btn--{size}" aria-label="…">. Square, icon 24 in xl, 20 in l/m, 16 in s/xs. aria-label is required.';
       return;
     }
@@ -1668,7 +1817,7 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
     var pLead = ensureProp(set, 'iconStart', 'INSTANCE_SWAP', icons.lead.id, 'Leading icon');
     var pShowTrail = ensureProp(set, 'showIconEnd', 'BOOLEAN', false, 'Show trailing icon');
     var pTrail = ensureProp(set, 'iconEnd', 'INSTANCE_SWAP', icons.trail.id, 'Trailing icon');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pLabel };
       p.lead.componentPropertyReferences = { visible: pShowLead, mainComponent: pLead };
@@ -1719,7 +1868,7 @@ var SC_STATES = ['default', 'dragging', 'loading', 'disabled'];
 
 async function buildSlideConfirm(R, notes, page, icons, loader) {
   var variants = [];
-  Object.keys(SC_TONES).forEach(function (tone) {
+  wireKeys(SC_TONES).forEach(function (tone) {
     SC_STATES.forEach(function (state) { variants.push({ tone: tone, state: state, name: 'tone=' + tone + ', state=' + state }); });
   });
   var parts = {};
@@ -1810,7 +1959,7 @@ async function buildSlideConfirm(R, notes, page, icons, loader) {
   function wire(set) {
     var pLabel = ensureProp(set, 'label', 'TEXT', 'Slide to confirm');
     var pBusy = ensureProp(set, 'busyLabel', 'TEXT', 'Processing…');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       parts[k].label.componentPropertyReferences = { characters: pLabel };
       parts[k].busy.componentPropertyReferences = { characters: pBusy };
     });
@@ -1897,9 +2046,9 @@ var BADGE_SIZES = { m: { h: 24, type: '--type-b2s' }, s: { h: 20, type: '--type-
 
 async function buildBadge(R, notes, page, icons) {
   var variants = [], parts = {};
-  Object.keys(BADGE_TONES).forEach(function (tone) {
+  wireKeys(BADGE_TONES).forEach(function (tone) {
     BADGE_APPEAR.forEach(function (appear) {
-      Object.keys(BADGE_SIZES).forEach(function (size) {
+      wireKeys(BADGE_SIZES).forEach(function (size) {
         variants.push({ tone: tone, appear: appear, size: size, name: 'tone=' + tone + ', appearance=' + appear + ', size=' + size });
       });
     });
@@ -1931,7 +2080,7 @@ async function buildBadge(R, notes, page, icons) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Paid');
     var pS = ensureProp(set, 'showIcon', 'BOOLEAN', false);
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', icons.clock.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       parts[k].label.componentPropertyReferences = { characters: pL };
       parts[k].icon.componentPropertyReferences = { visible: pS, mainComponent: pI };
     });
@@ -1958,7 +2107,7 @@ var COUNTER_TONES = { danger: ['--red-700', '--light-100'], primary: ['--purple-
 
 async function buildCounter(R, notes, page) {
   var variants = [], parts = {};
-  Object.keys(COUNTER_TONES).forEach(function (tone) {
+  wireKeys(COUNTER_TONES).forEach(function (tone) {
     [20, 16].forEach(function (s) {
       ['inline', 'corner'].forEach(function (pl) {
         variants.push({ tone: tone, size: s, placement: pl, name: 'tone=' + tone + ', size=' + s + ', placement=' + pl,
@@ -1981,7 +2130,7 @@ async function buildCounter(R, notes, page) {
   }
   function wire(set) {
     var p = ensureProp(set, 'count', 'TEXT', '3');
-    Object.keys(parts).forEach(function (k) { parts[k].componentPropertyReferences = { characters: p }; });
+    wireKeys(parts).forEach(function (k) { parts[k].componentPropertyReferences = { characters: p }; });
     set.description = '<span class="counter counter--{tone}">{count}</span>. Numbers only, "99+" past 99. tone danger = no class. size 16 is the counter inside a small tag (.tag--s). ' +
       'placement corner = inside .has-indicator on an icon or avatar: 2px ring in the page colour (--color-bg), offset -4 top and right. inline = in a tag or a row, no ring.';
   }
@@ -2065,8 +2214,8 @@ function tagPair(tone, size) { return (tone === 'ads') === (size === 'ads'); }
 
 async function buildTag(R, notes, page, icons, counter) {
   var variants = [], parts = {};
-  Object.keys(TAG_TONES).forEach(function (tone) {
-    Object.keys(TAG_SIZES).forEach(function (size) {
+  wireKeys(TAG_TONES).forEach(function (tone) {
+    wireKeys(TAG_SIZES).forEach(function (size) {
       if (!tagPair(tone, size)) return;
       TAG_STATES.forEach(function (state) {
         variants.push({ tone: tone, size: size, state: state, name: 'tone=' + tone + ', size=' + size + ', state=' + state });
@@ -2128,7 +2277,7 @@ async function buildTag(R, notes, page, icons, counter) {
     var pC = ensureProp(set, 'showCounter', 'BOOLEAN', false);
     var pCh = ensureProp(set, 'showChevron', 'BOOLEAN', false);
     var pR = ensureProp(set, 'showRemove', 'BOOLEAN', false);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.lead.componentPropertyReferences = { visible: pSI, mainComponent: pI };
@@ -2306,7 +2455,7 @@ var CHECK_W = 342;
 
 async function controlSet(R, notes, kind) {
   var pg = await pageNamed(kind === 'checkbox' ? 'Checkbox' : 'Radio');
-  var set = pg.findOne(function (n) { return n.type === 'COMPONENT_SET' && n.name === (kind === 'checkbox' ? 'Checkbox' : 'Radio'); });
+  var set = findLogical(pg, kind === 'checkbox' ? 'Checkbox' : 'Radio');
   if (set) return set;
   return (kind === 'checkbox' ? await buildCheckboxPage(R, notes) : await buildRadioPage(R, notes)).set;
 }
@@ -2393,7 +2542,7 @@ async function buildCheck(R, notes, page) {
     var pH = ensureProp(set, 'hint', 'TEXT', 'One caddie for your group');
     var pSM = ensureProp(set, 'showMeta', 'BOOLEAN', false);
     var pM = ensureProp(set, 'meta', 'TEXT', 'Rp 150,000');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.hint.componentPropertyReferences = { visible: pSH, characters: pH };
@@ -2669,7 +2818,7 @@ async function buildTextField(R, notes, page, icons) {
     var pBL = ensureProp(set, 'buttonLabel', 'TEXT', 'Change');
     var pSBI = ensureProp(set, 'showButtonIcon', 'BOOLEAN', false);
     var pBI = ensureProp(set, 'buttonIcon', 'INSTANCE_SWAP', icons.info.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       if (p.label) p.label.componentPropertyReferences = { characters: pL };
       if (p.value) p.value.componentPropertyReferences = { characters: pV };
@@ -2789,7 +2938,7 @@ async function buildSelect(R, notes, page, icons) {
     var pH = ensureProp(set, 'helpText', 'TEXT', 'We show courses near this city');
     var pSL = ensureProp(set, 'showLeadIcon', 'BOOLEAN', false);
     var pLI = ensureProp(set, 'leadIcon', 'INSTANCE_SWAP', icons.lead.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       if (p.value) p.value.componentPropertyReferences = { characters: pV };
@@ -2874,7 +3023,7 @@ async function buildOption(R, notes, page, icons) {
     var pSL = ensureProp(set, 'showLeadIcon', 'BOOLEAN', false);
     var pLI = ensureProp(set, 'leadIcon', 'INSTANCE_SWAP', icons.lead.id);
     var pD = ensureProp(set, 'showDivider', 'BOOLEAN', true);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.hint.componentPropertyReferences = { visible: pSH, characters: pH };
@@ -2953,7 +3102,7 @@ async function buildMenuItem(R, notes, page, icons) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Newest first');
     var pS = ensureProp(set, 'showIcon', 'BOOLEAN', false);
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', icons.lead.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       parts[k].label.componentPropertyReferences = { characters: pL };
       parts[k].ic.componentPropertyReferences = { visible: pS, mainComponent: pI };
     });
@@ -3076,7 +3225,7 @@ function bottomLine(R, parent, name, left, css) {
 
 async function switchSet(R, notes) {
   var pg = await pageNamed('Switch');
-  var set = pg.findOne(function (n) { return n.type === 'COMPONENT_SET' && n.name === 'Switch'; });
+  var set = findLogical(pg, 'Switch');
   return set || (await buildSwitchPage(R, notes)).set;
 }
 
@@ -3162,7 +3311,7 @@ async function buildListItem(R, notes, page, icons) {
     var pLI = ensureProp(set, 'leadIcon', 'INSTANCE_SWAP', icons.lead.id);
     var pD = ensureProp(set, 'showDivider', 'BOOLEAN', true);
     var pDI = ensureProp(set, 'insetDivider', 'BOOLEAN', false);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.title.componentPropertyReferences = { characters: pT };
       if (p.body) p.body.componentPropertyReferences = { characters: pB };
@@ -3313,7 +3462,7 @@ async function buildTab(R, notes, page, icons) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Reservations');
     var pS = ensureProp(set, 'showIcon', 'BOOLEAN', false);
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', icons.icon.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       parts[k].label.componentPropertyReferences = { characters: pL };
       parts[k].icon.componentPropertyReferences = { visible: pS, mainComponent: pI };
     });
@@ -3429,7 +3578,7 @@ async function buildDividerPage(R, notes) {
   }
   function wire(set) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Monday, 03 January 2026');
-    Object.keys(parts).forEach(function (k) { parts[k].label.componentPropertyReferences = { characters: pL }; });
+    wireKeys(parts).forEach(function (k) { parts[k].label.componentPropertyReferences = { characters: pL }; });
     set.description = '<hr class="divider [divider--inset|divider--inset-avatar|divider--band]"> · <div class="divider divider--label [divider--label-start]" role="separator"><span>{label}</span></div> · <span class="divider divider--v"></span>. ' +
       'line = 1px --color-line · inset starts after a 20 icon + 12 gap (32) · insetAvatar after Avatar S + 12 (44) · band = 8px --color-band edge to edge · vertical = 1x16 between meta items. Space around it comes from the parent gap, never the divider.';
   }
@@ -3453,7 +3602,7 @@ var AV_TYPES = ['initials', 'picture', 'guest'];
 
 async function buildAvatar(R, notes, page, icons) {
   var variants = [], parts = {};
-  Object.keys(AV_SIZES).forEach(function (sz) { AV_TYPES.forEach(function (t) { variants.push({ size: sz, type: t, name: 'size=' + sz + ', type=' + t }); }); });
+  wireKeys(AV_SIZES).forEach(function (sz) { AV_TYPES.forEach(function (t) { variants.push({ size: sz, type: t, name: 'size=' + sz + ', type=' + t }); }); });
   async function buildVariant(comp, v) {
     var d = AV_SIZES[v.size], pad = v.size === 'xs' ? 0 : 8;
     comp.layoutMode = 'HORIZONTAL';
@@ -3487,7 +3636,7 @@ async function buildAvatar(R, notes, page, icons) {
   }
   function wire(set) {
     var pI = ensureProp(set, 'initials', 'TEXT', 'GH');
-    Object.keys(parts).forEach(function (k) { parts[k].initials.componentPropertyReferences = { characters: pI }; });
+    wireKeys(parts).forEach(function (k) { parts[k].initials.componentPropertyReferences = { characters: pI }; });
     set.description = '<span class="avatar avatar--{size} [avatar--guest]">{initials}<img …></span>. size xs 16 (Label Small) · s 32 · m 48 (default, Label Large) · l 96 (H2). ' +
       'initials = dark-500 + white · picture = photo over the initials (replace the photo layer\'s image fill) · guest = light-300 + person icon dark-100. Always a circle.';
   }
@@ -3534,7 +3683,7 @@ async function buildAvatarGroup(R, notes, page, av) {
   function wire(set) {
     var pS = ensureProp(set, 'showLabel', 'BOOLEAN', true);
     var pL = ensureProp(set, 'label', 'TEXT', '+8 joined');
-    Object.keys(parts).forEach(function (k) { parts[k].label.componentPropertyReferences = { visible: pS, characters: pL }; });
+    wireKeys(parts).forEach(function (k) { parts[k].label.componentPropertyReferences = { visible: pS, characters: pL }; });
     set.description = '<div class="avatar-group [avatar-group--s|--xs]"><div class="avatar-group__stack">…avatar…</div><span class="avatar-group__label">{label}</span></div>. Up to 4 avatars, each with a ring in --color-bg. ' +
       'size l = Avatar m 48, overlap 16, B1 Semibold · s = Avatar s 32, overlap 8, B2 Semibold · xs = Avatar xs 16, overlap 4, ring 1, B3 Semibold. Hide or swap avatars in the stack.';
   }
@@ -3568,7 +3717,7 @@ async function buildCaptionPage(R, notes) {
   var icons = { neutral: await iconOrPlaceholder('Icon/Line/info', page, notes), error: await solidOr('warning-circle'),
     warning: await iconOrPlaceholder('Icon/Line/warning-circle', page, notes), success: await solidOr('tick-circle') };
   var variants = [], parts = {};
-  Object.keys(CAP_TONES).forEach(function (t) { ['m', 's'].forEach(function (sz) { variants.push({ tone: t, size: sz, name: 'tone=' + t + ', size=' + sz }); }); });
+  wireKeys(CAP_TONES).forEach(function (t) { ['m', 's'].forEach(function (sz) { variants.push({ tone: t, size: sz, name: 'tone=' + t + ', size=' + sz }); }); });
   var TEXT = { neutral: 'Free cancellation until 24 hours before', error: 'Pick a payment method', warning: 'Only 2 slots left', success: 'Booking confirmed' };
   async function buildVariant(comp, v) {
     var fg = CAP_TONES[v.tone][0], s = v.size === 's';
@@ -3590,7 +3739,7 @@ async function buildCaptionPage(R, notes) {
   }
   function wire(set) {
     var pT = ensureProp(set, 'text', 'TEXT', 'Free cancellation until 24 hours before');
-    Object.keys(parts).forEach(function (k) { parts[k].text.componentPropertyReferences = { characters: pT }; });
+    wireKeys(parts).forEach(function (k) { parts[k].text.componentPropertyReferences = { characters: pT }; });
     set.description = '<p class="caption [caption--error|--warning|--success] [caption--s]"><i class="icon" …></i>{text}</p>. One short line under a control or in a card; the icon keeps the meaning from being colour-only. ' +
       'neutral = dark-300 + line/info · error = red-500 + solid/warning-circle · warning = orange-700 + line/warning-circle · success = green-500 (--color-success) + solid/tick-circle. size m = B2 + icon 16 · s = B3 + icon 12. Link with aria-describedby.';
   }
@@ -3663,7 +3812,7 @@ async function buildPaginationPage(R, notes) {
     cParts[comp.name] = t;
   }, function (set) {
     var p = ensureProp(set, 'count', 'TEXT', '3 / 12');
-    Object.keys(cParts).forEach(function (k) { cParts[k].componentPropertyReferences = { characters: p }; });
+    wireKeys(cParts).forEach(function (k) { cParts[k].componentPropertyReferences = { characters: p }; });
     set.description = '<div class="dots-count">3 / 12</div>. B3 Semibold dark-300, tabular numbers. Use instead of dots past 9 pages.';
   }, function () {}, R);
   var pc = pairUp(cnt, cv, function (c) { return c.name === 'type=default'; });
@@ -3795,7 +3944,7 @@ async function buildRatingPage(R, notes) {
     rParts[comp.name] = { score: b, count: c };
   }, function (set) {
     var pS = ensureProp(set, 'score', 'TEXT', '4.5'), pSC = ensureProp(set, 'showCount', 'BOOLEAN', true), pC = ensureProp(set, 'count', 'TEXT', '(128)');
-    Object.keys(rParts).forEach(function (k) { rParts[k].score.componentPropertyReferences = { characters: pS }; rParts[k].count.componentPropertyReferences = { visible: pSC, characters: pC }; });
+    wireKeys(rParts).forEach(function (k) { rParts[k].score.componentPropertyReferences = { characters: pS }; rParts[k].count.componentPropertyReferences = { visible: pSC, characters: pC }; });
     set.description = '<span class="rating"><span class="stars">…</span><b>4.5</b> (128)</span>. Gap 4, B2 dark-300, the score in B2 Semibold dark-500, tabular numbers. Swap the Stars value to match the score.';
   }, function () {}, R);
   var pr = pairUp(rating, rv, function (c) { return c.name === 'type=default'; });
@@ -3871,7 +4020,7 @@ async function buildStepperPage(R, notes) {
   }
   function wire(set) {
     var p = ensureProp(set, 'value', 'TEXT', '2');
-    Object.keys(parts).forEach(function (k) { parts[k].value.componentPropertyReferences = { characters: p }; });
+    wireKeys(parts).forEach(function (k) { parts[k].value.componentPropertyReferences = { characters: p }; });
     set.description = '<div class="stepper" role="group" aria-label="Players" data-min="1" data-max="4"><button class="stepper__btn" data-step="-1">…minus-lg…</button><output class="stepper__value">{value}</output><button class="stepper__btn" data-step="1">…add-lg…</button></div>. ' +
       'Buttons 36 circle light-300 (44 hit area), icon 20 · pressed = light-500 · atMin / atMax = that button disabled (light-200, dark-100) · disabled = .is-disabled. Value B1 Semibold, min width 32. Over ~10 use a TextField.';
   }
@@ -3925,7 +4074,7 @@ async function buildPinPage(R, notes) {
     }
   }, function (set) {
     var p = ensureProp(set, 'digit', 'TEXT', '4');
-    Object.keys(cParts).forEach(function (k) { cParts[k].componentPropertyReferences = { characters: p }; });
+    wireKeys(cParts).forEach(function (k) { cParts[k].componentPropertyReferences = { characters: p }; });
     set.description = '<div class="pin__cell [is-active] [is-filled]">{digit}</div>, drawn by pin.js. 48 x 56, radius 12, Text field colours: default light-200 + 1px light-500 · active light-100 + 2px purple-500 · error red-50 + red-500 (active 2px) · disabled light-300. Digit H4, mask dot 12.';
   }, function () {}, R);
   var pc = pairUp(cell, cv, function (c) { return /^state=/.test(c.name); });
@@ -3986,7 +4135,7 @@ async function buildPinPage(R, notes) {
     var pH = ensureProp(set, 'helpText', 'TEXT', 'We sent a 6-digit code to +62 812 3456 7890');
     var pSF = ensureProp(set, 'showFoot', 'BOOLEAN', true);
     var pF = ensureProp(set, 'foot', 'TEXT', 'Resend code in 0:42');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.help.componentPropertyReferences = { visible: pSH };
@@ -4089,7 +4238,7 @@ async function buildSliderPage(R, notes) {
     var pS = ensureProp(set, 'showScale', 'BOOLEAN', true);
     var pMn = ensureProp(set, 'min', 'TEXT', '1 km');
     var pMx = ensureProp(set, 'max', 'TEXT', '50 km');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.value.componentPropertyReferences = { characters: pV };
@@ -4187,7 +4336,7 @@ async function buildToasterPage(R, notes) {
     var pSA = ensureProp(set, 'showAction', 'BOOLEAN', false);
     var pA = ensureProp(set, 'action', 'TEXT', 'View');
     var pSC = ensureProp(set, 'showClose', 'BOOLEAN', false);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.text.componentPropertyReferences = { characters: pT };
       p.icon.componentPropertyReferences = { visible: pSI };
@@ -4248,7 +4397,7 @@ async function buildTooltipPage(R, notes) {
   }
   function wire(set) {
     var pT = ensureProp(set, 'text', 'TEXT', 'Covers payment processing and support.');
-    Object.keys(parts).forEach(function (k) { parts[k].text.componentPropertyReferences = { characters: pT }; });
+    wireKeys(parts).forEach(function (k) { parts[k].text.componentPropertyReferences = { characters: pT }; });
     set.description = '<span class="tip" data-placement="{placement}"><button class="tip__btn" aria-describedby="t1">…info 16…</button><span class="tooltip" id="t1" role="tooltip">{text}</span></span>. ' +
       'dark-400, white B2 Semibold, padding 8/12, radius 8, max 240, Elevation 2, 8 away from the trigger with an 8px pointer. dismiss = coach mark (.tooltip--dismiss + .tooltip__close 32, stays until closed). Opens on tap on phones.';
   }
@@ -4279,7 +4428,7 @@ async function buildTooltipPage(R, notes) {
     mParts[comp.name] = t;
   }, function (set) {
     var p = ensureProp(set, 'label', 'TEXT', 'Rp 850k');
-    Object.keys(mParts).forEach(function (k) { mParts[k].componentPropertyReferences = { characters: p }; });
+    wireKeys(mParts).forEach(function (k) { mParts[k].componentPropertyReferences = { characters: p }; });
     set.description = '<button class="map-pin" aria-pressed="{selected}">{label}</button>. White label h32, padding 12, radius 8, purple-600 B2 Semibold, Elevation 1, 8px pointer. selected = dark-400 + white (scales to 1.08 on the web).';
   }, function () {}, R);
   var pm = pairUp(pin, mv, function (c) { return mParts[c.name]; });
@@ -4316,22 +4465,18 @@ var UI_PARTS = { PhotoTile: 'Screen / Home', PassUpsell: 'Screen / Home', Sectio
   RefRow: 'Screen / Track' };
 // Assets panel folders come from slash names: a UI component is "<screen>/<name>" (Home/ProductCard).
 function uiSetName(name) { return UI_PARTS[name] ? UI_PARTS[name].replace(/^Screen \/ /, '') + '/' + name : name; }
-function isUiSet(n, name) { return n.type === 'COMPONENT_SET' && (n.name === uiSetName(name) || n.name === name); }
+function isUiSet(n, name) { return n.type === 'COMPONENT_SET' && (setTag(n).logical === name || n.name === swingBase(uiSetName(name)) || n.name === uiSetName(name) || n.name === name); }
 async function setFrom(pageName, setName, buildPage, R, notes) {
   if (LIB && !UI_PARTS[setName]) return libSet(setName, pageName);
   pageName = UI_PARTS[setName] || pageName;
-  if (UI_PARTS[setName]) {
-    var up = await pageNamed(pageName);
-    var us = up.findOne(function (n) { return isUiSet(n, setName); });
-    if (us) return us;
-    await buildPage(R, notes);
-    return up.findOne(function (n) { return isUiSet(n, setName); });
-  }
   var pg = await pageNamed(pageName);
-  var set = pg.findOne(function (n) { return n.type === 'COMPONENT_SET' && n.name === setName; });
+  var alt = UI_PARTS[setName] ? uiSetName(setName) : null;
+  var set = findLogical(pg, setName, alt);
+  // a set built before the swing names (no tag): build its page once, which renames and splits it in place
+  if (set && !set.__split && !setTag(set).logical) { await buildPage(R, notes); set = findLogical(pg, setName, alt) || set; }
   if (set) return set;
   await buildPage(R, notes);
-  return pg.findOne(function (n) { return n.type === 'COMPONENT_SET' && n.name === setName; });
+  return findLogical(pg, setName, alt);
 }
 // setFrom, and the set must have this variant: a page built before the variant existed is rebuilt
 // (in place, instances stay linked). In library mode a missing variant means "publish again".
@@ -4405,7 +4550,7 @@ async function buildStepsPage(R, notes) {
     var pB = ensureProp(set, 'body', 'TEXT', 'Morning slots fill first on weekends');
     var pSM = ensureProp(set, 'showMeta', 'BOOLEAN', false);
     var pM = ensureProp(set, 'meta', 'TEXT', '2 min');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       if (p.number) p.number.componentPropertyReferences = { characters: pN };
       p.title.componentPropertyReferences = { characters: pT };
@@ -4480,7 +4625,7 @@ async function buildReviewPage(R, notes) {
     rParts[comp.name] = { name: nm, date: dt, text: tx, line: divider(comp) };
   }, function (set) {
     var pN = ensureProp(set, 'name', 'TEXT', 'Ghais Ramadhan'), pD = ensureProp(set, 'date', 'TEXT', '2 days ago'), pT = ensureProp(set, 'text', 'TEXT', LONG), pL = ensureProp(set, 'showDivider', 'BOOLEAN', true);
-    Object.keys(rParts).forEach(function (k) { var p = rParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.date.componentPropertyReferences = { characters: pD }; p.text.componentPropertyReferences = { characters: pT }; p.line.componentPropertyReferences = { visible: pL }; });
+    wireKeys(rParts).forEach(function (k) { var p = rParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.date.componentPropertyReferences = { characters: pD }; p.text.componentPropertyReferences = { characters: pT }; p.line.componentPropertyReferences = { visible: pL }; });
     set.description = '<article class="review [is-open]"><div class="review__by"><span class="avatar avatar--s">…</span><b>{name}</b>{date}</div><span class="stars stars--s">…</span><p class="review__text">{text}</p></article>. Padding 16 0, gap 8, line under (off on the last). Text B1, clamped to 3 lines until open. Stars 16 orange-500, off light-500.';
   }, function () {}, R);
   var pr = pairUp(review, rv, function (c) { return rParts[c.name]; });
@@ -4519,7 +4664,7 @@ async function buildReviewPage(R, notes) {
   }, function (set) {
     var pN = ensureProp(set, 'name', 'TEXT', 'Ardi Pratama'), pTm = ensureProp(set, 'time', 'TEXT', '1h'), pT = ensureProp(set, 'text', 'TEXT', 'Count me in for Saturday. I can bring one more player.');
     var pA = ensureProp(set, 'showActions', 'BOOLEAN', true), pL = ensureProp(set, 'showDivider', 'BOOLEAN', true);
-    Object.keys(cParts).forEach(function (k) { var p = cParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.time.componentPropertyReferences = { characters: pTm }; p.text.componentPropertyReferences = { characters: pT }; p.acts.componentPropertyReferences = { visible: pA }; p.line.componentPropertyReferences = { visible: pL }; });
+    wireKeys(cParts).forEach(function (k) { var p = cParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.time.componentPropertyReferences = { characters: pTm }; p.text.componentPropertyReferences = { characters: pT }; p.acts.componentPropertyReferences = { visible: pA }; p.line.componentPropertyReferences = { visible: pL }; });
     set.description = '<div class="comment"><span class="avatar avatar--s">…</span><div class="comment__main"><div class="comment__head"><span class="comment__name">{name}</span><span class="comment__time">{time}</span></div><p class="comment__text">{text}</p><div class="comment__acts">Reply · Like</div></div></div>. Padding 16 0, gap 12, line under.';
   }, function () {}, R);
   var pc = pairUp(comment, cv, function (c) { return c.name === 'type=default'; });
@@ -4568,7 +4713,7 @@ async function buildReviewPage(R, notes) {
   }, function (set) {
     var pN = ensureProp(set, 'name', 'TEXT', 'Sabtu pagi @ Pondok Indah'), pTm = ensureProp(set, 'time', 'TEXT', '09:41');
     var pB = ensureProp(set, 'body', 'TEXT', 'Ardi: Count me in, I can bring one more player for the back nine.'), pL = ensureProp(set, 'showDivider', 'BOOLEAN', true);
-    Object.keys(hParts).forEach(function (k) { var p = hParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.time.componentPropertyReferences = { characters: pTm }; p.body.componentPropertyReferences = { characters: pB }; p.line.componentPropertyReferences = { visible: pL }; });
+    wireKeys(hParts).forEach(function (k) { var p = hParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.time.componentPropertyReferences = { characters: pTm }; p.body.componentPropertyReferences = { characters: pB }; p.line.componentPropertyReferences = { visible: pL }; });
     set.description = '<a class="list-item list-item--standard chat-row [is-unread]"><span class="list-item__lead"><span class="avatar">…</span></span><span class="list-item__text"><span class="list-item__title"><span>{name}</span><span class="chat-row__time">{time}</span></span><span class="list-item__body">{body}</span></span><span class="chat-row__side">…counter…</span></a> in .list--inset-avatar-m. ' +
       'Avatar 48, name B1 Semibold (one line), time B3, body B2 clamped to 2 lines. unread = time purple-600 B3 Semibold, body dark-500, primary Counter.';
   }, function () {}, R);
@@ -4648,7 +4793,7 @@ async function buildBottomNavPage(R, notes) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Home');
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', home.line.id);
     var pC = ensureProp(set, 'showCounter', 'BOOLEAN', false);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       if (!/type=action/.test(k)) p.icon.componentPropertyReferences = { mainComponent: pI };
@@ -4868,7 +5013,7 @@ async function buildAppBarPage(R, notes) {
     var pT = ensureProp(set, 'title', 'TEXT', 'Booking details');
     var pA = ensureProp(set, 'showActions', 'BOOLEAN', true);
     var pPh = ensureProp(set, 'placeholder', 'TEXT', 'Search...'), pCo = ensureProp(set, 'country', 'TEXT', 'ID');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       if (p.title && !/type=(home|search)/.test(k)) p.title.componentPropertyReferences = { characters: pT };
       if (p.actions) p.actions.componentPropertyReferences = { visible: pA };
@@ -4896,7 +5041,7 @@ var MEDIA_RATIO = { classic: [3, 2], wide: [16, 9], square: [1, 1], portrait: [4
 async function buildMediaSet(R, notes, page) {
   var img = (await findIcon('Icon/Solid/image')) || (await iconOrPlaceholder('Icon/Line/image', page, notes));
   var variants = [];
-  Object.keys(MEDIA_RATIO).forEach(function (r) { ['light', 'dark'].forEach(function (t) { ['photo', 'empty'].forEach(function (c) { variants.push({ ratio: r, tone: t, content: c }); }); }); });
+  wireKeys(MEDIA_RATIO).forEach(function (r) { ['light', 'dark'].forEach(function (t) { ['photo', 'empty'].forEach(function (c) { variants.push({ ratio: r, tone: t, content: c }); }); }); });
   simpleSet(variants);
   var set = await buildSet(page, 'Media', variants, async function (comp, v) {
     var q = MEDIA_RATIO[v.ratio], w = v.ratio === 'portrait' ? 200 : 342, h = Math.round(w * q[1] / q[0]);
@@ -5025,7 +5170,7 @@ async function buildCardPage(R, notes) {
     var pS = ensureProp(set, 'score', 'TEXT', '4.9');
     var pRv = ensureProp(set, 'reviews', 'TEXT', '(132 reviews)');
     var pF = ensureProp(set, 'showFooter', 'BOOLEAN', true);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       if (p.media) p.media.componentPropertyReferences = { visible: pM };
       p.title.componentPropertyReferences = { characters: pT };
@@ -5066,7 +5211,7 @@ async function buildCardPage(R, notes) {
     sParts[comp.name] = { label: l, value: val };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'HCP'), pV = ensureProp(s, 'value', 'TEXT', '12.4');
-    Object.keys(sParts).forEach(function (k) { sParts[k].label.componentPropertyReferences = { characters: pL }; sParts[k].value.componentPropertyReferences = { characters: pV }; });
+    wireKeys(sParts).forEach(function (k) { sParts[k].label.componentPropertyReferences = { characters: pL }; sParts[k].value.componentPropertyReferences = { characters: pV }; });
     s.description = '<div class="stat [stat--neutral]"><span class="stat__label">{label}</span><span class="stat__value">{value}</span></div>. purple-50 + purple-600, label B2, value H4, padding 12/8, radius 8. neutral = light-200 + 1px light-500, dark-500 value. Put 2 in .stat-grid or 1–4 in .stat-row (gap 8), set to Fill.';
   }, function () {}, R);
   var ps = pairUp(stat, sv, function (c) { return sParts[c.name]; });
@@ -5120,7 +5265,7 @@ async function buildActionCardPage(R, notes) {
     var pT = ensureProp(set, 'title', 'TEXT', 'Book a tee time');
     var pSD = ensureProp(set, 'showDesc', 'BOOLEAN', true);
     var pD = ensureProp(set, 'desc', 'TEXT', '120+ courses near you');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.icon.componentPropertyReferences = { mainComponent: pI };
       p.title.componentPropertyReferences = { characters: pT };
@@ -5227,7 +5372,7 @@ async function buildCourseCardPage(R, notes) {
     var pP = ensureProp(set, 'price', 'TEXT', 'From Rp 850k');
     var pSM = ensureProp(set, 'showMeta', 'BOOLEAN', true);
     var pM = ensureProp(set, 'meta', 'TEXT', 'Next tee time 07:30');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.tags.componentPropertyReferences = { visible: pTg };
       p.title.componentPropertyReferences = { characters: pT };
@@ -5310,7 +5455,7 @@ async function buildCourseCardPage(R, notes) {
     kParts[comp.name] = { dots: dots, count: cnt, countText: ct };
   }, function (s) {
     var pD = ensureProp(s, 'showDots', 'BOOLEAN', true), pC = ensureProp(s, 'showCount', 'BOOLEAN', true), pT = ensureProp(s, 'count', 'TEXT', '1 / 12');
-    Object.keys(kParts).forEach(function (k) { var p = kParts[k]; p.dots.componentPropertyReferences = { visible: pD }; p.count.componentPropertyReferences = { visible: pC }; p.countText.componentPropertyReferences = { characters: pT }; });
+    wireKeys(kParts).forEach(function (k) { var p = kParts[k]; p.dots.componentPropertyReferences = { visible: pD }; p.count.componentPropertyReferences = { visible: pC }; p.countText.componentPropertyReferences = { characters: pT }; });
     s.description = '<div class="carousel"><div class="carousel__track"><div class="media">…</div>…</div></div>. Radius 12, swipes one photo at a time. carousel.js adds the dots chip (bottom 12, scrim-media-soft, 6px white dots at 48%, active 8 at 100%) and the "1 / 12" chip (top-right 12, h20, B3 Semibold white).';
   }, function () {}, R);
   var pk = pairUp(car, kv, function (c) { return c.name === 'type=default'; });
@@ -5376,7 +5521,7 @@ async function buildSheetPage(R, notes) {
   }, function (set) {
     var pT = ensureProp(set, 'title', 'TEXT', 'Choose players'), pSD = ensureProp(set, 'showDesc', 'BOOLEAN', false), pD = ensureProp(set, 'desc', 'TEXT', 'Up to 4 in one flight');
     var pSC = ensureProp(set, 'showClose', 'BOOLEAN', true), pSB = ensureProp(set, 'showBack', 'BOOLEAN', true);
-    Object.keys(hParts).forEach(function (k) { var p = hParts[k]; p.title.componentPropertyReferences = { characters: pT }; p.desc.componentPropertyReferences = { visible: pSD, characters: pD }; p.close.componentPropertyReferences = { visible: pSC }; if (p.back) p.back.componentPropertyReferences = { visible: pSB }; });
+    wireKeys(hParts).forEach(function (k) { var p = hParts[k]; p.title.componentPropertyReferences = { characters: pT }; p.desc.componentPropertyReferences = { visible: pSD, characters: pD }; p.close.componentPropertyReferences = { visible: pSC }; if (p.back) p.back.componentPropertyReferences = { visible: pSB }; });
     set.description = '<header class="sheet__head [sheet__head--center]"><button class="sheet__icon" aria-label="Back">…</button><div class="sheet__heading"><h2 class="sheet__title">{title}</h2><p class="sheet__desc">{desc}</p></div><button class="sheet__close" aria-label="Close">close-lg</button></header>. ' +
       'Padding 12 16 16 24 (center: 12 16 16 16), title H5, desc B2 dark-300, 44 icon buttons with 24 dark-300 icons. center = back · title · close with the title centred. lined = 1px light-500 line once the body scrolls (.is-scrolled / .sheet--lined).';
   }, function () {}, R);
@@ -5408,7 +5553,7 @@ async function buildSheetPage(R, notes) {
     aParts[comp.name] = { icon: i, label: t };
   }, function (set) {
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', I.link.id), pL = ensureProp(set, 'label', 'TEXT', 'Copy link');
-    Object.keys(aParts).forEach(function (k) { aParts[k].icon.componentPropertyReferences = { mainComponent: pI }; aParts[k].label.componentPropertyReferences = { characters: pL }; });
+    wireKeys(aParts).forEach(function (k) { aParts[k].icon.componentPropertyReferences = { mainComponent: pI }; aParts[k].label.componentPropertyReferences = { characters: pL }; });
     set.description = '<button class="share-to__app"><span class="share-to__mark"><i class="icon"></i></span>{label}</button>. 64 wide, 48 light-300 tile (radius 12) with a 20 icon or a 40 app logo, label B3 Semibold. In .share-to, gap 8, scrolls sideways.';
   }, function () {}, R);
   var pa = pairUp(app, av, function (c) { return aParts[c.name]; });
@@ -5603,7 +5748,7 @@ async function buildSearchPage(R, notes) {
   }, function (set) {
     var pT = ensureProp(set, 'title', 'TEXT', 'pondok indah'), pSM = ensureProp(set, 'showMeta', 'BOOLEAN', false), pM = ensureProp(set, 'meta', 'TEXT', 'Golf course · South Jakarta');
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', I.clock.id);
-    Object.keys(rParts).forEach(function (k) { var p = rParts[k]; p.title.componentPropertyReferences = { characters: pT }; p.meta.componentPropertyReferences = { visible: pSM, characters: pM }; if (p.icon) p.icon.componentPropertyReferences = { mainComponent: pI }; });
+    wireKeys(rParts).forEach(function (k) { var p = rParts[k]; p.title.componentPropertyReferences = { characters: pT }; p.meta.componentPropertyReferences = { visible: pSM, characters: pM }; if (p.icon) p.icon.componentPropertyReferences = { mainComponent: pI }; });
     set.description = '<a class="search__row"><i class="icon"></i>|<div class="media"></div><span class="search__text"><span class="search__title">…<mark>{match}</mark>…</span><span class="search__meta">{meta}</span></span></a>. Min 48, padding 4 0, gap 12, radius 8, B1 dark-500; the match is B1 Semibold purple-600 (re-apply after editing the title). icon 20 dark-200 · media 48 square radius 8. pressed = light-200.';
   }, function () {}, R);
   var pr = pairUp(row, rv, function (c) { return rParts[c.name]; });
@@ -5707,7 +5852,7 @@ async function buildDatePickerPage(R, notes) {
     dParts[comp.name] = t;
   }, function (set) {
     var p = ensureProp(set, 'day', 'TEXT', '14');
-    Object.keys(dParts).forEach(function (k) { dParts[k].componentPropertyReferences = { characters: p }; });
+    wireKeys(dParts).forEach(function (k) { dParts[k].componentPropertyReferences = { characters: p }; });
     set.description = '<button class="cal__day [is-today] [has-dot]" aria-pressed="{selected}">{day}</button>. 44, radius 12, B1 dark-500. today = 1px purple-500 ring + purple-500 B1 Semibold · selected = purple-500 + white B1 Semibold · pressed = light-300 · disabled = dark-100 (past or full). dot = 4px at 60% (has tee times / events).';
   }, function () {}, R);
   var pd = pairUp(day, dv, function (c) { return dParts[c.name]; });
@@ -5801,7 +5946,7 @@ async function buildDatePickerPage(R, notes) {
   }, function (set) {
     var pA = ensureProp(set, 'dow', 'TEXT', 'SAT'), pB = ensureProp(set, 'date', 'TEXT', '7 Nov', 'num'), pM = ensureProp(set, 'mine', 'BOOLEAN', false);
     var pSM = ensureProp(set, 'showMeta', 'BOOLEAN', false), pMT = ensureProp(set, 'meta', 'TEXT', '6 games');
-    Object.keys(sParts).forEach(function (k) { var p = sParts[k]; p.dow.componentPropertyReferences = { characters: pA }; p.num.componentPropertyReferences = { characters: pB }; p.mine.componentPropertyReferences = { visible: pM }; p.meta.componentPropertyReferences = { visible: pSM, characters: pMT }; });
+    wireKeys(sParts).forEach(function (k) { var p = sParts[k]; p.dow.componentPropertyReferences = { characters: pA }; p.num.componentPropertyReferences = { characters: pB }; p.mine.componentPropertyReferences = { visible: pM }; p.meta.componentPropertyReferences = { visible: pSM, characters: pMT }; });
     set.description = '<button class="date-strip__day [is-mine]" aria-pressed="{selected}"><span class="date-strip__dow">Sat</span><span class="date-strip__num">7 Nov</span>[<span class="date-strip__meta">6 games</span>]</button>. ' +
       'showMeta + meta = the optional line under the date (B3 dark-300, dark-100 when off), tile grows to 60; in a strip turn it on for every day so heights match. ' +
       'Min 64 x 48, padding 4/12, radius 8, light-100 + 1px light-400. Weekday B3 dark-300 uppercase over the date B2 Semibold dark-500. selected = purple-50 + 1px purple-500, date purple-500 · disabled = 1px light-300, all dark-100 (no rounds that day) · mine = 8px green-500 dot top-right (you are in a round).';
@@ -5879,7 +6024,7 @@ async function buildTimePickerPage(R, notes) {
     parts[comp.name] = { time: t, meta: m };
   }, function (set) {
     var pT = ensureProp(set, 'time', 'TEXT', '07:30'), pSM = ensureProp(set, 'showMeta', 'BOOLEAN', true);
-    Object.keys(parts).forEach(function (k) { parts[k].time.componentPropertyReferences = { characters: pT }; parts[k].meta.componentPropertyReferences = { visible: pSM }; });
+    wireKeys(parts).forEach(function (k) { parts[k].time.componentPropertyReferences = { characters: pT }; parts[k].meta.componentPropertyReferences = { visible: pSM }; });
     set.description = '<button class="slot [is-low]" aria-pressed="{selected}"><span class="slot__time">07:30</span><span class="slot__meta">4 left</span></button>. Min 56, padding 8/4, radius 12, light-100 + 1px light-500, time S3 Semibold, meta B3 dark-300. low = orange-700 meta · selected = purple-500, white time, purple-100 meta · disabled = time struck through. Width 108 = 3 per row in 342 (min 88).';
   }, function () {}, R);
   var pv = pairUp(slot, variants, function (c) { return parts[c.name]; });
@@ -6036,7 +6181,7 @@ async function buildAccordionPage(R, notes) {
     var pB = ensureProp(set, 'body', 'TEXT', 'Yes. Members can bring up to 3 guests per round. Guests pay the visitor green fee at the counter.');
     var pL = ensureProp(set, 'showDivider', 'BOOLEAN', true);
     var pI = ensureProp(set, 'leadIcon', 'INSTANCE_SWAP', lead.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.title.componentPropertyReferences = { characters: pT };
       if (p.body) p.body.componentPropertyReferences = { characters: pB };
@@ -6424,7 +6569,7 @@ async function buildPhotoTilePage(R, notes) {
     pt[comp.name] = l;
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Tee time');
-    Object.keys(pt).forEach(function (k) { pt[k].componentPropertyReferences = { characters: pL }; });
+    wireKeys(pt).forEach(function (k) { pt[k].componentPropertyReferences = { characters: pL }; });
     s.description = '<a class="photo-tile"><img …><span>{label}</span></a> in .photo-tiles (4 columns, gap 12). Photo ratio 72.75 / 96, radius 8; label B3 Semibold centred. Change the photo by replacing the image fill on "photo".';
   }, { description: 'A photo shortcut with a label. Four of them in a row are the Home booking entries.',
     code: ['<nav class="photo-tiles"><a class="photo-tile" href="#"><img src="…" alt=""><span>Tee time</span></a>…</nav>', '.photo-tiles = 4 columns, gap 12'] });
@@ -6464,7 +6609,7 @@ async function buildPassUpsellPage(R, notes) {
   }, function (s) {
     var pC = ensureProp(s, 'copy', 'TEXT', 'Get access to exclusive promotions and free of processing fees from only Rp. 300k / month');
     var pA = ensureProp(s, 'cta', 'TEXT', 'Join Swing Pass'), pV = ensureProp(s, 'credits', 'TEXT', '0 credits');
-    Object.keys(pu).forEach(function (k) { var p = pu[k]; p.copy.componentPropertyReferences = { characters: pC }; p.cta.componentPropertyReferences = { characters: pA }; p.value.componentPropertyReferences = { characters: pV }; });
+    wireKeys(pu).forEach(function (k) { var p = pu[k]; p.copy.componentPropertyReferences = { characters: pC }; p.cta.componentPropertyReferences = { characters: pA }; p.value.componentPropertyReferences = { characters: pV }; });
     s.description = '<div class="pass-upsell"><div class="pass-upsell__top"><div class="pass-upsell__copy">logo + <p>{copy}</p></div><a class="btn-glass">{cta}</a></div><a class="pass-upsell__row">Swing Credits logo · {credits} ›</a></div>. ' +
       'Radius 16, light-100, elevation-brand-s. Top: gradient-swing-pass, padding 24, gap 32, copy B2 Semibold white. Glass button: glass-fill + 1px glass-line, radius 8, CTA S white. Credits row padding 16, value B3 Semibold.';
   }, { description: 'The Swing Pass upsell on Home, with the member’s Swing Credits underneath.',
@@ -6482,7 +6627,7 @@ async function buildSectionHeadPage(R, notes) {
     sh[comp.name] = t;
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Explore golf\ncourses near you');
-    Object.keys(sh).forEach(function (k) { sh[k].componentPropertyReferences = { characters: pT }; });
+    wireKeys(sh).forEach(function (k) { sh[k].componentPropertyReferences = { characters: pT }; });
     s.description = '<div class="section-head"><h2 class="promo-banner__title">{title}</h2><a class="btn btn--s btn--tertiary">See all ›</a></div>. Title H5 dark-500, Button S tertiary on the right, bottom aligned, gap 16.';
   }, { description: 'A section title with a See all button, above a rail.',
     code: ['<div class="section-head"><h2 class="promo-banner__title">Explore golf<br>courses near you</h2><a class="btn btn--s btn--tertiary" href="#">See all …</a></div>'] });
@@ -6536,7 +6681,7 @@ async function buildProductCardPage(R, notes) {
       loc: ensureProp(s, 'location', 'TEXT', 'Jakarta Timur, Indonesia · 54km away'), promo: ensureProp(s, 'promo', 'TEXT', '10% Off + 1 other promo'),
       cash: ensureProp(s, 'cashback', 'TEXT', 'Up to 2% cashback'), upt: ensureProp(s, 'upsell', 'TEXT', 'Save up to 50% with Swing Pass'),
       showUp: ensureProp(s, 'showUpsell', 'BOOLEAN', true) };
-    Object.keys(pc).forEach(function (k) {
+    wireKeys(pc).forEach(function (k) {
       var p = pc[k];
       ['title', 'was', 'best', 'save', 'loc', 'promo', 'cash', 'upt'].forEach(function (f) { p[f].componentPropertyReferences = { characters: P[f] }; });
       p.up.componentPropertyReferences = { visible: P.showUp };
@@ -6569,7 +6714,7 @@ async function buildPromoBannerPage(R, notes) {
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Get 100,000 Swing Credits when you refer a friend to join Swing!');
     var pL = ensureProp(s, 'label', 'TEXT', 'No referrals yet'), pS = ensureProp(s, 'sub', 'TEXT', '0 Swing Credits earned');
-    Object.keys(pb).forEach(function (k) { var p = pb[k]; p.t.componentPropertyReferences = { characters: pT }; p.lb.componentPropertyReferences = { characters: pL }; p.sb.componentPropertyReferences = { characters: pS }; });
+    wireKeys(pb).forEach(function (k) { var p = pb[k]; p.t.componentPropertyReferences = { characters: pT }; p.lb.componentPropertyReferences = { characters: pL }; p.sb.componentPropertyReferences = { characters: pS }; });
     s.description = '<section class="promo-banner"><h2 class="promo-banner__title">{title}</h2><img class="promo-banner__art"><div class="promo-banner__foot"><div class="promo-banner__stat">icon · {label} / {sub}</div><a class="btn btn--s btn--tertiary">…</a></div></section>. Gap 16, title H5, art 3:2 radius 16, label B3s dark-500, sub B4s dark-200.';
   }, { description: 'The referral banner on Home and Account: title, illustration, what the member earned and an action.',
     code: ['<section class="promo-banner"><h2 class="promo-banner__title">…</h2><img class="promo-banner__art" src="…" alt=""><div class="promo-banner__foot">…</div></section>'] });
@@ -6596,7 +6741,7 @@ async function buildHelpCardPage(R, notes) {
     hc[comp.name] = { t: t };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Need help with anything else?\nConnect with our call center');
-    Object.keys(hc).forEach(function (k) { hc[k].t.componentPropertyReferences = { characters: pT }; });
+    wireKeys(hc).forEach(function (k) { hc[k].t.componentPropertyReferences = { characters: pT }; });
     s.description = '<section class="help-card"><img class="help-card__art"><h2 class="help-card__title">{title}</h2><ul class="help-card__list">…</ul><a class="btn btn--s btn--tertiary">…</a></section>. 218 tall, radius 16, gradient-help-card, agent art at 188/16 (311 x 216, cropped), title H6, list B3 with 12 dots, button bottom-left 16.';
   }, { description: 'The call center card: what support can help with, and a button to reach it.',
     code: ['<section class="help-card"><img class="help-card__art" src="…" alt=""><h2 class="help-card__title">…</h2><ul class="help-card__list">…</ul><a class="btn btn--s btn--tertiary">…</a></section>'] });
@@ -6656,7 +6801,7 @@ async function buildFeaturedPromoPage(R, notes) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Rp 999,000 · Sun & PH PM Deal at Suvarna Jakarta Golf Club');
     var pG = ensureProp(s, 'tag', 'TEXT', 'Swing Pass Exclusive');
     var pS = ensureProp(s, 'status', 'TEXT', 'Active');
-    Object.keys(fp).forEach(function (k) {
+    wireKeys(fp).forEach(function (k) {
       fp[k].t.componentPropertyReferences = { characters: pT }; fp[k].g.componentPropertyReferences = { characters: pG };
       if (fp[k].st) fp[k].st.componentPropertyReferences = { characters: pS };
     });
@@ -6741,7 +6886,7 @@ async function buildCashbackTablePage(R, notes) {
     ct[comp.name] = { here: hereText };
   }, function (s) {
     var pH = ensureProp(s, 'here', 'TEXT', 'You are here');
-    Object.keys(ct).forEach(function (k) { if (ct[k].here) ct[k].here.componentPropertyReferences = { characters: pH }; });
+    wireKeys(ct).forEach(function (k) { if (ct[k].here) ct[k].here.componentPropertyReferences = { characters: pH }; });
     s.description = '<table class="cashback-table">: "You are here" tab (Green 500, radius 8 top, B2 Semibold white, padding 8 12) over the current plan; ' +
       'plan headers mark 32 + B2 Semibold, padding 16 12, gap 8 (Regular Light 200, Swing Pass Purple 50 radius 16 top right); ' +
       'rows: slot B1 Semibold + B2 Dark 300, padding 16 8 16 16; values H5 + "cashback" B2, padding 16 12; Light 500 line under every row; ' +
@@ -6770,7 +6915,7 @@ async function buildLinkCardPage(R, notes) {
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'What’s new'), pB = ensureProp(s, 'body', 'TEXT', 'See what we’ve included on version 5.0');
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', info.id);
-    Object.keys(lc).forEach(function (k) { var p = lc[k]; p.t.componentPropertyReferences = { characters: pT }; p.b.componentPropertyReferences = { characters: pB }; p.ic.componentPropertyReferences = { mainComponent: pI }; });
+    wireKeys(lc).forEach(function (k) { var p = lc[k]; p.t.componentPropertyReferences = { characters: pT }; p.b.componentPropertyReferences = { characters: pB }; p.ic.componentPropertyReferences = { mainComponent: pI }; });
     s.description = '<a class="link-card"><i class="icon link-card__icon"></i><span class="link-card__text"><span class="link-card__title">{title}</span><span class="link-card__body">{body}</span></span><i class="icon link-card__chev"></i></a>. 242 wide in a .link-rail column (gap 8, columns 12 apart). Padding 12 16, radius 16, light-200, icon 24, title B2 Semibold, body B3 dark-300.';
   }, { description: 'A link with an icon, title and one line of help. Two columns of three scroll sideways at the bottom of Home.',
     code: ['<section class="link-rail"><div class="link-rail__col"><a class="link-card" href="#">…</a>…</div>…</section>'] });
@@ -6820,6 +6965,11 @@ async function nameInstances(roots) {
       if (n.name !== mc.name && !/^[\w-]+=/.test(n.name)) continue;   // a name someone chose (avatar, edit) stays
       var setName = mc.parent && mc.parent.type === 'COMPONENT_SET' ? mc.parent.name : mc.name;
       var variant = mc.parent && mc.parent.type === 'COMPONENT_SET' && mc.name !== 'type=default' ? mc.name : '';
+      // a split set already says its kind (swing_btn_primary): leave tone=primary out of the layer name
+      if (variant) variant = variant.split(', ').filter(function (kv) {
+        var p = kv.split('=');
+        return !(SPLIT_PROPS.indexOf(p[0]) >= 0 && new RegExp('_' + snakeName(p[1]) + '$').test(setName));
+      }).join(', ');
       n.name = setName.split('/').pop() + (variant ? ' · ' + variant : '');
     }
   }
@@ -7029,7 +7179,7 @@ async function buildAccountScreen(R, notes) {
   var nav = byName(navSet)['items=3'].createInstance(); scr.appendChild(nav); nav.layoutSizingHorizontal = 'FILL';
   var NI = byName(navItems), tabs = [];
   var navInsts = nav.findAll(function (n) { return n.type === 'INSTANCE'; });
-  for (var ti = 0; ti < navInsts.length; ti++) { var tm = await navInsts[ti].getMainComponentAsync(); if (tm && tm.parent === navItems) tabs.push(navInsts[ti]); }
+  for (var ti = 0; ti < navInsts.length; ti++) { var tm = await navInsts[ti].getMainComponentAsync(); if (tm && inPart(tm, navItems)) tabs.push(navInsts[ti]); }
   if (tabs.length === 3) { tabs[0].swapComponent(NI['type=tab, state=default']); tabs[2].swapComponent(NI['type=tab, state=active']); }
 
   /* ---------- Components on this screen ---------- */
@@ -7073,7 +7223,7 @@ async function buildNotifRowPage(R, notes) {
   }, function (s) {
     var pD = ensureProp(s, 'date', 'TEXT', '21/11'), pT = ensureProp(s, 'title', 'TEXT', 'Tio Saputra has made his first booking! Check your Swing Credits reward here.');
     var pU = ensureProp(s, 'unread', 'BOOLEAN', true);
-    Object.keys(nr).forEach(function (k) { nr[k].d.componentPropertyReferences = { characters: pD }; nr[k].t.componentPropertyReferences = { characters: pT }; nr[k].slot.componentPropertyReferences = { visible: pU }; });
+    wireKeys(nr).forEach(function (k) { nr[k].d.componentPropertyReferences = { characters: pD }; nr[k].t.componentPropertyReferences = { characters: pT }; nr[k].slot.componentPropertyReferences = { visible: pU }; });
     s.description = '<li><a class="notif-row [is-unread]"><span class="avatar avatar--s">TS</span><span class="notif-row__text"><span class="notif-row__date">21/11</span><span class="notif-row__title">…</span></span><span class="indicator"></span></a></li> in .notif-list (white, padding 16 page-x). unread = .is-unread (shows the indicator). Every row has the light-500 line under it.';
   }, { description: 'One notification: avatar, date, title and the unread dot.' });
 }
@@ -7169,7 +7319,7 @@ async function buildCreditCardPage(R, notes) {
     cc[comp.name] = { val: val, et: et };
   }, function (s) {
     var pV = ensureProp(s, 'credits', 'TEXT', '1,000,000'), pE = ensureProp(s, 'expiry', 'TEXT', '1,000,000 credits will expire on 31 Dec 2024');
-    Object.keys(cc).forEach(function (k) { cc[k].val.componentPropertyReferences = { characters: pV }; cc[k].et.componentPropertyReferences = { characters: pE }; });
+    wireKeys(cc).forEach(function (k) { cc[k].val.componentPropertyReferences = { characters: pV }; cc[k].et.componentPropertyReferences = { characters: pE }; });
     s.description = '<div class="credit-head" style="--art:url(banner)"><div class="credit-card">logo, .credit-card__value (H2), .credit-card__expiry (B4 + time-sand 10), .btn.btn--s.btn--block Redeem</div></div>. Head 108; the card sits 32 down with page-x sides, white, light-500 line, radius 16, Elevation 2. The component holds the card\'s overhang below the head; on the web .credit-body clears it with 92 top padding.';
   }, { description: 'Swing Credits balance on its banner, with the redeem button.' });
 }
@@ -7208,7 +7358,7 @@ async function buildAdsRowPage(R, notes) {
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Always use Swing Credits'), pB = ensureProp(s, 'body', 'TEXT', 'Credits will always be used during payments');
     var pA = ensureProp(s, 'amount', 'TEXT', '+ 5,000'), pW = ensureProp(s, 'word', 'TEXT', 'earned'), pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', hIcon.id);
-    Object.keys(ar).forEach(function (k) {
+    wireKeys(ar).forEach(function (k) {
       var p = ar[k];
       p.t.componentPropertyReferences = { characters: pT }; p.bd.componentPropertyReferences = { characters: pB };
       if (p.amt) { p.amt.componentPropertyReferences = { characters: pA }; p.word.componentPropertyReferences = { characters: pW }; }
@@ -7235,7 +7385,7 @@ async function buildRewardCardPage(R, notes) {
     rc[comp.name] = { t: t, sh: sh, p: p };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Honma TR20V Irons'), pS = ensureProp(s, 'shop', 'TEXT', 'Juragan Golf'), pP = ensureProp(s, 'price', 'TEXT', '650,000 Swing Credits');
-    Object.keys(rc).forEach(function (k) { rc[k].t.componentPropertyReferences = { characters: pT }; rc[k].sh.componentPropertyReferences = { characters: pS }; rc[k].p.componentPropertyReferences = { characters: pP }; });
+    wireKeys(rc).forEach(function (k) { rc[k].t.componentPropertyReferences = { characters: pT }; rc[k].sh.componentPropertyReferences = { characters: pS }; rc[k].p.componentPropertyReferences = { characters: pP }; });
     s.description = '<a class="reward-card"><img class="reward-card__img"><span class="reward-card__text"><span class="reward-card__title">…</span><span class="reward-card__shop">…</span></span><span class="reward-card__price"><img 10>…</span></a> in .reward-grid (2 columns, gap 16). Photo 156 high, light-500 line, radius 8. Change the photo on "photo".';
   }, { description: 'A reward you can redeem with Swing Credits.' });
 }
@@ -7257,7 +7407,7 @@ async function buildAskBoxPage(R, notes) {
     ab[comp.name] = t;
   }, function (s) {
     var pT = ensureProp(s, 'text', 'TEXT', 'Can’t find the rewards you’re looking for? Simply tell us, and we’ll try to add it into our rewards list.');
-    Object.keys(ab).forEach(function (k) { ab[k].componentPropertyReferences = { characters: pT }; });
+    wireKeys(ab).forEach(function (k) { ab[k].componentPropertyReferences = { characters: pT }; });
     s.description = '<div class="ask-box"><img 48><p class="ask-box__text">…</p><a class="btn btn--s">Request reward</a></div>. light-300, radius 16, padding 24, gap 16, centred; text H6 dark-200 with 24 side padding.';
   }, { description: 'Ask for a reward that is not in the list.' });
 }
@@ -7496,7 +7646,7 @@ async function buildMailFootPage(R, notes) {
     mf[comp.name] = cp;
   }, function (s) {
     var pC = ensureProp(s, 'copyright', 'TEXT', 'Copyright © 2026 PT. Silverwing Wisteria Indosport');
-    Object.keys(mf).forEach(function (k) { mf[k].componentPropertyReferences = { characters: pC }; });
+    wireKeys(mf).forEach(function (k) { mf[k].componentPropertyReferences = { characters: pC }; });
     s.description = '<footer class="mail__foot"><div class="mail__brand"><img albatross 24><span class="mail__site">www.getswing.app</span><span class="mail__copy">…</span></div>[<div class="mail__stores">App Store 72 + Google Play 81</div>]</footer>. Centred, padding 16, gap 16; brand gap 4, site B3 Semibold, copyright B4, both dark-200. stores=true adds the store badges (Swing Pass emails).';
   }, { description: 'Email footer: Swing mark, site, copyright, and optionally the store badges.', variants: MF_V });
 }
@@ -7589,7 +7739,7 @@ async function buildCodeCardPage(R, notes) {
     cc[comp.name] = { lb: lb, av: av, code: code };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'From referrals, you\u2019ve earned'), pA = ensureProp(s, 'amount', 'TEXT', '1,450,000'), pC = ensureProp(s, 'code', 'TEXT', 'ALVLIA123');
-    Object.keys(cc).forEach(function (k) { cc[k].lb.componentPropertyReferences = { characters: pL }; cc[k].av.componentPropertyReferences = { characters: pA }; cc[k].code.componentPropertyReferences = { characters: pC }; });
+    wireKeys(cc).forEach(function (k) { cc[k].lb.componentPropertyReferences = { characters: pL }; cc[k].av.componentPropertyReferences = { characters: pA }; cc[k].code.componentPropertyReferences = { characters: pC }; });
     s.description = '<section class="code-card"><div class="code-card__top"><p class="code-card__label">…</p><p class="code-card__amount"><img swing-credits 32>{amount}</p></div><div class="code-card__band"><p class="code-card__code">{code}</p><div class="code-card__actions">btn--s Copy, btn--s Share</div></div></section>. Radius 16, light-500 line, purple-50 band, Elevation brand.';
   }, { description: 'Referral rewards and code, with Copy and Share.' });
 }
@@ -7616,7 +7766,7 @@ async function buildStatPanelPage(R, notes) {
     sp[comp.name] = p;
   }, function (s) {
     var P = [[ensureProp(s, 'value1', 'TEXT', '0'), ensureProp(s, 'label1', 'TEXT', 'Joined Swing')], [ensureProp(s, 'value2', 'TEXT', '0'), ensureProp(s, 'label2', 'TEXT', 'Made first booking')]];
-    Object.keys(sp).forEach(function (k) { sp[k].forEach(function (x, i) { x[0].componentPropertyReferences = { characters: P[i][0] }; x[1].componentPropertyReferences = { characters: P[i][1] }; }); });
+    wireKeys(sp).forEach(function (k) { sp[k].forEach(function (x, i) { x[0].componentPropertyReferences = { characters: P[i][0] }; x[1].componentPropertyReferences = { characters: P[i][1] }; }); });
     s.description = '<div class="stat-panel"><div class="stat-panel__item"><span class="stat-panel__value [is-zero]">0</span><span class="stat-panel__label">…</span></div><span class="stat-panel__divider"></span>…</div>. light-200, radius 16, 12/16, gap 12. zero=true = .is-zero (value dark-100); otherwise purple-500.';
   }, { description: 'Two numbers side by side with a divider.', variants: V });
 }
@@ -7648,7 +7798,7 @@ async function buildStepCardPage(R, notes) {
     sc[comp.name] = { t: t, b: b };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', RE_STEPS[0][0]), pB = ensureProp(s, 'body', 'TEXT', RE_STEPS[0][1]);
-    Object.keys(sc).forEach(function (k) { sc[k].t.componentPropertyReferences = { characters: pT }; sc[k].b.componentPropertyReferences = { characters: pB }; });
+    wireKeys(sc).forEach(function (k) { sc[k].t.componentPropertyReferences = { characters: pT }; sc[k].b.componentPropertyReferences = { characters: pB }; });
     s.description = '<li class="step-card"><span class="step-card__art" style="--step-art:url(step-art-N.svg)"><i class="icon">…</i></span><span class="step-card__text"><span class="step-card__title">…</span><span class="step-card__body">…</span></span></li> in .step-rail (gap 32, a 2px light-500 line through the art middle). step = which art and icon; title and body are props (the default text is step 1, so set them per instance).';
   }, { description: 'A how-it-works step: art tile with icon, title, body.', variants: V });
 }
@@ -7682,7 +7832,7 @@ async function buildFaqItemPage(R, notes) {
     fq[comp.name] = p;
   }, function (s) {
     var pQ = ensureProp(s, 'question', 'TEXT', RE_FAQ[0][0]), pA = ensureProp(s, 'answer', 'TEXT', RE_FAQ[0][1]);
-    Object.keys(fq).forEach(function (k) { fq[k].q.componentPropertyReferences = { characters: pQ }; if (fq[k].a) fq[k].a.componentPropertyReferences = { characters: pA }; });
+    wireKeys(fq).forEach(function (k) { fq[k].q.componentPropertyReferences = { characters: pQ }; if (fq[k].a) fq[k].a.componentPropertyReferences = { characters: pA }; });
     s.description = '<details class="faq__item" [open]><summary class="faq__q"><span>{question}</span><i chevron-down 16></i></summary><p class="faq__a">{answer}</p></details> in .faq (white, light-500 line, radius 16, 0 / 24). Line under each item; set the last instance\'s bottom stroke to 0. open=true: question purple-500, chevron turned, answer shown (right padding 28 = 16 + 12). ads=true = .faq--ads (Swing Pass): the ADS chevron in dark-200.';
   }, { description: 'A FAQ question that opens to its answer.', variants: V });
 }
@@ -7787,7 +7937,7 @@ async function buildCodeHeroPage(R, notes) {
     ch[comp.name] = { l: l, c: c };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Alvin\u2019s referral code'), pC = ensureProp(s, 'code', 'TEXT', 'ALVLIA123');
-    Object.keys(ch).forEach(function (k) { ch[k].l.componentPropertyReferences = { characters: pL }; ch[k].c.componentPropertyReferences = { characters: pC }; });
+    wireKeys(ch).forEach(function (k) { ch[k].l.componentPropertyReferences = { characters: pL }; ch[k].c.componentPropertyReferences = { characters: pC }; });
     s.description = '<section class="code-hero"><p class="code-hero__label">…</p><p class="code-hero__code">…</p></section>. Centred, padding 24, gap 4, radius 16, white, Elevation brand; label B2 Semibold dark-300, code H1 purple-500.';
   }, { description: 'A big referral code card for the shared story.' });
 }
@@ -7813,7 +7963,7 @@ async function buildKvRowPage(R, notes) {
     kv[comp.name] = p;
   }, function (s) {
     var pK = ensureProp(s, 'key', 'TEXT', 'Join date'), pV = ensureProp(s, 'value', 'TEXT', '01 Jan 2025');
-    Object.keys(kv).forEach(function (n) { kv[n].k.componentPropertyReferences = { characters: pK }; kv[n].v.componentPropertyReferences = { characters: pV }; });
+    wireKeys(kv).forEach(function (n) { kv[n].k.componentPropertyReferences = { characters: pK }; kv[n].v.componentPropertyReferences = { characters: pV }; });
     s.description = '<div class="kv"><dt>{key}</dt><dd [class="kv__pay"]>{value}</dd></div> in .kv-list (column, gap 8). Space-between, gap 16; key B3 Semibold dark-300, value B3 dark-300 right-aligned. pay=true = .kv__pay: a 14 payment logo (radius 4, replace the image fill) before the value.';
   }, { description: 'A label and value on one line; pay=true adds a payment logo.', variants: V });
 }
@@ -7964,7 +8114,7 @@ async function buildPassCardPage(R, notes) {
     pc[comp.name] = { bt: bt, nm: nm, mt: mt };
   }, function (s) {
     var pB = ensureProp(s, 'badge', 'TEXT', 'BETA'), pN = ensureProp(s, 'name', 'TEXT', 'Ronaldo Nazario'), pM = ensureProp(s, 'meta', 'TEXT', 'N235G-4GG34 \u2022 Active until 31 Dec 2025');
-    Object.keys(pc).forEach(function (k) { pc[k].bt.componentPropertyReferences = { characters: pB }; pc[k].nm.componentPropertyReferences = { characters: pN }; pc[k].mt.componentPropertyReferences = { characters: pM }; });
+    wireKeys(pc).forEach(function (k) { pc[k].bt.componentPropertyReferences = { characters: pB }; pc[k].nm.componentPropertyReferences = { characters: pN }; pc[k].mt.componentPropertyReferences = { characters: pM }; });
     s.description = '<div class="pass-card [pass-card--enlarge]">mark, .pass-card__top (wordmark + .pass-card__badge), .pass-card__who (photo 48 + name H5 + meta B4s)</div>. 208 tall, padding 24, radius 8, glass fill + 1px glass line, Elevation pass card, white text; sits on the Swing Pass band. enlarge=true leaves 38 at the bottom for the floating "Enlarge card" button. The web blurs what is behind it (backdrop-filter 100); Figma has no backdrop blur on a fill, so the glass is the gradient only.';
   }, { description: 'The Swing Pass membership card, on the purple band.', variants: V });
 }
@@ -8012,7 +8162,7 @@ async function buildSaveCardPage(R, notes) {
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Since 01 Jan 2025, you\u2019ve saved'), pV = ensureProp(s, 'value', 'TEXT', 'Rp. 50,000,000'), pK = ensureProp(s, 'link', 'TEXT', 'See how you\u2019ve saved this much');
     var pO = ensureProp(s, 'without', 'TEXT', '5,000,000'), pW = ensureProp(s, 'with', 'TEXT', '10,000,000');
-    Object.keys(sv).forEach(function (k) {
+    wireKeys(sv).forEach(function (k) {
       var p = sv[k]; p.link.componentPropertyReferences = { characters: pK };
       if (p.lb) { p.lb.componentPropertyReferences = { characters: pL }; p.val.componentPropertyReferences = { characters: pV }; }
       if (p.off) { p.off[0].componentPropertyReferences = { characters: pO }; p.on[0].componentPropertyReferences = { characters: pW }; }
@@ -8046,7 +8196,7 @@ async function buildPayMethodPage(R, notes) {
   }, function (s) {
     var pN = ensureProp(s, 'name', 'TEXT', 'Rp. 2,500,000 / 12 months'), pS = ensureProp(s, 'sub', 'TEXT', 'Renews on 01 Jan 2026'), pA = ensureProp(s, 'showAction', 'BOOLEAN', true);
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', icon.id);
-    Object.keys(pm).forEach(function (k) { var x = pm[k]; x.nm.componentPropertyReferences = { characters: pN }; if (x.sb) x.sb.componentPropertyReferences = { characters: pS }; x.b.componentPropertyReferences = { visible: pA }; if (x.ic) x.ic.componentPropertyReferences = { mainComponent: pI }; });
+    wireKeys(pm).forEach(function (k) { var x = pm[k]; x.nm.componentPropertyReferences = { characters: pN }; if (x.sb) x.sb.componentPropertyReferences = { characters: pS }; x.b.componentPropertyReferences = { visible: pA }; if (x.ic) x.ic.componentPropertyReferences = { mainComponent: pI }; });
     s.description = '<div class="pay-method pay-method--l"><img 22><span class="pay-method__text"><span class="pay-method__name">…</span><span class="pay-method__sub">…</span></span><button class="btn btn--s btn--tertiary">Manage</button></div>. light-200, radius 16, 12/16, gap 14. Replace the image fill on "logo" for another wallet; the button label is on the Button instance.';
   }, { variants: V,  description: 'The billing method row with its renewal line and a Manage button.' });
 }
@@ -8081,7 +8231,7 @@ async function buildDealCardPage(R, notes) {
     dc[comp.name] = { tt: tt, t: t, mt: mt };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Power Golf Swing Zone 50% Off'), pM = ensureProp(s, 'meta', 'TEXT', 'Mon - Sun. 08:00 - 23:00.');
-    Object.keys(dc).forEach(function (k) { dc[k].t.componentPropertyReferences = { characters: pT }; dc[k].mt.componentPropertyReferences = { characters: pM }; });
+    wireKeys(dc).forEach(function (k) { dc[k].t.componentPropertyReferences = { characters: pT }; dc[k].mt.componentPropertyReferences = { characters: pM }; });
     s.description = '<a class="deal-card"><img class="deal-card__img"><span class="deal-card__tag"><img 10>{kind}</span><span class="deal-card__text"><span class="deal-card__title">…</span><span class="deal-card__meta">…</span></span></a> in .deal-rail (gap 8, centred first card). 160 x 240, padding 16, radius 16, photo + deal scrim, white text. kind = the tag (Driving range / Tee time). Replace the image fill on "photo" per deal.';
   }, { description: 'A Swing Pass deal: photo, kind tag, title and hours.', variants: V });
 }
@@ -8105,7 +8255,7 @@ async function buildPerkPage(R, notes) {
     pk[comp.name] = { ic: ic, t: t, d: d };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ics[0].id), pT = ensureProp(s, 'title', 'TEXT', '0% processing fee'), pD = ensureProp(s, 'desc', 'TEXT', 'If you\u2019re Swing Pass member, you won\u2019t be charged with any processing fees.');
-    Object.keys(pk).forEach(function (k) { pk[k].ic.componentPropertyReferences = { mainComponent: pI }; pk[k].t.componentPropertyReferences = { characters: pT }; pk[k].d.componentPropertyReferences = { characters: pD }; });
+    wireKeys(pk).forEach(function (k) { pk[k].ic.componentPropertyReferences = { mainComponent: pI }; pk[k].t.componentPropertyReferences = { characters: pT }; pk[k].d.componentPropertyReferences = { characters: pD }; });
     s.description = '<div class="perk"><span class="perk__icon"><i style="--perk:url(b-*.svg)"></i></span><span class="perk__text"><span class="perk__title">…</span><span class="perk__desc">…</span></span></div> in .perk-list (white, line, radius 16, padding 24, gap 24, dividers between). The web paints the perk art with the Swing Pass gradient through a mask; here the art keeps its own colours (Icon/Ref/sp-b-*), swap it with the icon property.';
   }, { description: 'A Swing Pass benefit: icon tile, title, description.' });
 }
@@ -8300,7 +8450,7 @@ async function buildEventsHeadPage(R, notes) {
     eh[comp.name] = { t: t, ph: ph };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Register events\n& tournaments'), pP = ensureProp(s, 'placeholder', 'TEXT', 'Search events...');
-    Object.keys(eh).forEach(function (k) { eh[k].t.componentPropertyReferences = { characters: pT }; eh[k].ph.componentPropertyReferences = { characters: pP }; });
+    wireKeys(eh).forEach(function (k) { eh[k].t.componentPropertyReferences = { characters: pT }; eh[k].ph.componentPropertyReferences = { characters: pP }; });
     s.description = '<header class="events-head [events-head--tee]"><div class="events-head__art"></div><div class="events-head__bar"><a class="round-btn">back</a><h1 class="events-head__title">…</h1></div><label class="searchbar searchbar--ads">…country…</label></header>. 276 tall, purple-100; the search bar hangs 2 below the bottom (the component is 278). tee=true = the tee time art, 26 from the top (events: 62).';
   }, { description: 'The ADS listing header: art, round back button, big title, search with country.', variants: V });
 }
@@ -8347,7 +8497,7 @@ async function buildEventCardPage(R, notes) {
   }, function (s) {
     var P = { t: ensureProp(s, 'title', 'TEXT', 'INDONESIA DEVELOPMENT OPEN - SERIES 2'), amt: ensureProp(s, 'amount', 'TEXT', 'Rp. 850,000 / pax'), place: ensureProp(s, 'place', 'TEXT', 'Jababeka Golf & Country Club'),
       date: ensureProp(s, 'date', 'TEXT', '\u2022  Monday, 18 May 2026'), ct: ensureProp(s, 'cashback', 'TEXT', 'Up to 2% cashback') };
-    Object.keys(ec).forEach(function (k) { Object.keys(P).forEach(function (f) { if (ec[k][f]) ec[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    wireKeys(ec).forEach(function (k) { wireKeys(P).forEach(function (f) { if (ec[k][f]) ec[k][f].componentPropertyReferences = { characters: P[f] }; }); });
     s.description = '<a class="event-card"><span class="event-card__media"><span class="event-card__photo"><img><span class="cash-chip">…</span></span>[<span class="pass-strip">…</span>]</span><span class="event-card__body">title H5, price, .meta-line</span></a> in .event-list (gap 32). pass=true adds the Swing Pass strip under the photo. Replace the image fill on "image" per event. The date keeps the web\'s "•" separator in its text.';
   }, { description: 'An event or tournament in the list: photo with cashback, optional Swing Pass strip, title, price, place and date.', variants: V });
 }
@@ -8367,7 +8517,7 @@ async function buildHostCtaPage(R, notes) {
     hc[comp.name] = t;
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Planning to host a tournament really soon? Connect with us and let Swing help you!');
-    Object.keys(hc).forEach(function (k) { hc[k].componentPropertyReferences = { characters: pT }; });
+    wireKeys(hc).forEach(function (k) { hc[k].componentPropertyReferences = { characters: pT }; });
     s.description = '<div class="host-cta [host-cta--inset]"><h2 class="host-cta__title">…</h2><a class="btn btn--s btn--tertiary">…</a></div> at the end of a listing. Centred, gap 16, title H5. inset=true pads 24 more on each side (tee time). Set the button label on the Button instance.';
   }, { description: 'A centred ask at the end of a listing, with a tertiary button.', variants: V });
 }
@@ -8468,7 +8618,7 @@ async function buildPromoCardPage(R, notes) {
     pr[comp.name] = { t: t, sb: sb };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Rp. 50,000 off for INDO Series 2'), pS = ensureProp(s, 'sub', 'TEXT', 'Expiry date: 31 Mar 2023');
-    Object.keys(pr).forEach(function (k) { pr[k].t.componentPropertyReferences = { characters: pT }; pr[k].sb.componentPropertyReferences = { characters: pS }; });
+    wireKeys(pr).forEach(function (k) { pr[k].t.componentPropertyReferences = { characters: pT }; pr[k].sb.componentPropertyReferences = { characters: pS }; });
     s.description = '<div class="promo-card [promo-card--pass]"><span class="promo-card__tag"><img 16></span><span class="promo-card__body"><span class="promo-card__title">…</span><span class="promo-card__sub">…</span></span></div>. Radius 8, green-100 line, green-50 tag. pass=true = .promo-card--pass (Swing Pass exclusive): purple-500 line, gradient tag, sub in B4s purple-500.';
   }, { description: 'A promo with its tag and expiry; pass=true for Swing Pass exclusive.', variants: V });
 }
@@ -8488,7 +8638,7 @@ async function buildCreditStripPage(R, notes) {
     cs[comp.name] = t;
   }, function (s) {
     var pT = ensureProp(s, 'text', 'TEXT', 'Earn up to 5% cashback on Swing Credits!');
-    Object.keys(cs).forEach(function (k) { cs[k].componentPropertyReferences = { characters: pT }; });
+    wireKeys(cs).forEach(function (k) { cs[k].componentPropertyReferences = { characters: pT }; });
     s.description = '<a class="credit-strip"><img credits 16><span>…</span><img chevron 16></a>. Padding 8, gap 8, radius 8, purple-50, B3 Semibold purple-500.';
   }, { description: 'A Swing Credits cashback line that links on.' });
 }
@@ -8509,7 +8659,7 @@ async function buildInfoTilePage(R, notes) {
     it[comp.name] = { i: i, l: l, v: val };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ic.id), pL = ensureProp(s, 'label', 'TEXT', 'Venue'), pV = ensureProp(s, 'value', 'TEXT', 'Jababeka Golf & Country Club');
-    Object.keys(it).forEach(function (k) { it[k].i.componentPropertyReferences = { mainComponent: pI }; it[k].l.componentPropertyReferences = { characters: pL }; it[k].v.componentPropertyReferences = { characters: pV }; });
+    wireKeys(it).forEach(function (k) { it[k].i.componentPropertyReferences = { mainComponent: pI }; it[k].l.componentPropertyReferences = { characters: pL }; it[k].v.componentPropertyReferences = { characters: pV }; });
     s.description = '<div class="info-tile [info-tile--wide]"><img 22><span class="info-tile__text"><span class="info-tile__label">…</span><span class="info-tile__value">…</span></span></div> in .info-tiles (2 columns, gap 8 / 12). light-200, radius 16, 12/16, gap 14. --wide spans both columns: set the instance to Fill in a full-width row. Swap the icon with the icon property.';
   }, { description: 'A label and value with an icon, in a 2-column grid.' });
 }
@@ -8548,7 +8698,7 @@ async function buildVenuePage(R, notes) {
     vn[comp.name] = { nm: nm, ad: ad, ds: ds };
   }, function (s) {
     var pN = ensureProp(s, 'name', 'TEXT', 'Rainbow Hills Golf'), pA = ensureProp(s, 'address', 'TEXT', 'Lengkong Kulon, Pagedangan, Tangerang Regency, DKI Jakarta 15339'), pD = ensureProp(s, 'distance', 'TEXT', '2km from your location');
-    Object.keys(vn).forEach(function (k) { if (vn[k].nm) vn[k].nm.componentPropertyReferences = { characters: pN }; vn[k].ad.componentPropertyReferences = { characters: pA }; vn[k].ds.componentPropertyReferences = { characters: pD }; });
+    wireKeys(vn).forEach(function (k) { if (vn[k].nm) vn[k].nm.componentPropertyReferences = { characters: pN }; vn[k].ad.componentPropertyReferences = { characters: pA }; vn[k].ds.componentPropertyReferences = { characters: pD }; });
     s.description = '<div class="venue"><div class="venue__text">.venue__id (name B2s, address B3s, 3 lines), .meta-line--primary</div><div class="venue__map"><img><span class="venue__pin">…</span></div></div>. Gap 16; map 94, radius 8, purple pin in the middle. Replace the image fill on "image" with the place\'s map.';
   }, { variants: V,  description: 'A place: name, address, distance and a small map with a pin.' });
 }
@@ -8572,7 +8722,7 @@ async function buildBrandCardPage(R, notes) {
     bc[comp.name] = t;
   }, function (s) {
     var pN = ensureProp(s, 'name', 'TEXT', 'VIVO');
-    Object.keys(bc).forEach(function (k) { bc[k].componentPropertyReferences = { characters: pN }; });
+    wireKeys(bc).forEach(function (k) { bc[k].componentPropertyReferences = { characters: pN }; });
     s.description = '<a class="brand-card"><img [class="brand-card__wide"]><span class="brand-card__name"><span>…</span><img chevron 12></span></a> in .brand-grid (2 columns, gap 8 / 12). light-200, radius 16, padding 16, gap 8. wide=true = a 90 x 48 logo. Replace the image fill on "logo" per sponsor.';
   }, { description: 'A sponsor tile: logo and name.', variants: V });
 }
@@ -8727,7 +8877,7 @@ async function buildNoteBarPage(R, notes) {
     nb[comp.name] = await K.txt(comp, '--type-b3s', '--light-100', 'You will be auto renewed with recurring billing methods.', 'text', 'fill');
   }, function (s) {
     var pT = ensureProp(s, 'text', 'TEXT', 'You will be auto renewed with recurring billing methods.');
-    Object.keys(nb).forEach(function (k) { nb[k].componentPropertyReferences = { characters: pT }; });
+    wireKeys(nb).forEach(function (k) { nb[k].componentPropertyReferences = { characters: pT }; });
     s.description = '<p class="note-bar [note-bar--primary|--warning]"><i class="icon">info</i>…</p>. ADS inline toaster: padding 8, gap 8, radius 8, dark-200 (primary purple-500, warning orange-700), B3 Semibold white.';
   }, { description: 'A short dark note on the grey band.', variants: V });
 }
@@ -8753,7 +8903,7 @@ async function buildMethodRowPage(R, notes) {
     mr[comp.name] = p;
   }, function (s) {
     var pL = ensureProp(s, 'logoImage', 'INSTANCE_SWAP', logo.id), pN = ensureProp(s, 'name', 'TEXT', 'Mastercard 1234');
-    Object.keys(mr).forEach(function (k) { mr[k].lg.componentPropertyReferences = { mainComponent: pL }; mr[k].nm.componentPropertyReferences = { characters: pN }; });
+    wireKeys(mr).forEach(function (k) { mr[k].lg.componentPropertyReferences = { mainComponent: pL }; mr[k].nm.componentPropertyReferences = { characters: pN }; });
     s.description = '<a class="method-row"><img 22 | class="method-row__logo" 40 x 22><span class="method-row__name">…</span>[button | chevron]</a> in .method-list. Gap 14, min 48 (56 with a button), light-500 line under it (set the last instance\'s bottom stroke to 0 where the web has no line). Swap the logo with the logoImage property (Logo/Ref/*); a DS line icon also fits the 22 slot.';
   }, { description: 'A payment method row: logo, name, and a button or chevron.', variants: V });
 }
@@ -8796,7 +8946,7 @@ async function buildPlanPage(R, notes) {
     pl[comp.name] = p;
   }, function (s) {
     var P = { name: ensureProp(s, 'name', 'TEXT', '12 months'), was: ensureProp(s, 'was', 'TEXT', '~ Rp. 3,000,000'), now: ensureProp(s, 'now', 'TEXT', '~ Rp. 2,500,000'), flag: ensureProp(s, 'flag', 'TEXT', 'MOST POPULAR!') };
-    Object.keys(pl).forEach(function (k) { Object.keys(P).forEach(function (f) { if (pl[k][f]) pl[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    wireKeys(pl).forEach(function (k) { wireKeys(P).forEach(function (f) { if (pl[k][f]) pl[k][f].componentPropertyReferences = { characters: P[f] }; }); });
     s.description = '<label class="plan">[<span class="plan__flag">Most popular!</span>]<span class="plan__body"><span class="plan__text">name + .plan__prices (was + now)</span><input class="choice__radio" type="radio"></span></label> in .plan-list (gap 8). kind: popular = flag + struck price + now, was = struck + now, plain = one price (dark-300). selected = the checked plan (purple-500 line, purple-50). Price texts keep the "~ " prefix; a text override keeps its first two characters in B3 only if you keep them.';
   }, { description: 'A billing plan to pick, with its price.', variants: V });
 }
@@ -9147,7 +9297,7 @@ async function buildChoiceRowPage(R, notes) {
     await adsRadio(R, comp, v.selected === 'true', notes);
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'The plan is too expensive');
-    Object.keys(cr).forEach(function (k) { cr[k].componentPropertyReferences = { characters: pL }; });
+    wireKeys(cr).forEach(function (k) { cr[k].componentPropertyReferences = { characters: pL }; });
     s.description = '<label class="choice"><span class="choice__label">…</span><input class="choice__radio" type="radio"></label> in .choice-list. Gap 8, min 48, light-500 line under it; label B2 Semibold. selected = the checked radio (ADS radio art).';
   }, { description: 'One answer to pick, with a radio on the right.', variants: V });
 }
@@ -9178,7 +9328,7 @@ async function buildBillRowPage(R, notes) {
     br[comp.name] = { t: t, m1: m1, m2: m2, am: am };
   }, function (s) {
     var P = { t: ensureProp(s, 'title', 'TEXT', 'Swing Pass \u00b7 12 months'), m1: ensureProp(s, 'meta', 'TEXT', '01 Jan 2026 \u00b7 Auto renewal \u00b7'), m2: ensureProp(s, 'wallet', 'TEXT', 'OVO'), am: ensureProp(s, 'amount', 'TEXT', 'Rp. 2,500,000') };
-    Object.keys(br).forEach(function (k) { Object.keys(P).forEach(function (f) { br[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    wireKeys(br).forEach(function (k) { wireKeys(P).forEach(function (f) { br[k][f].componentPropertyReferences = { characters: P[f] }; }); });
     s.description = '<a class="bill-row"><span class="bill-row__text">title + .bill-row__meta (… · logo 14 + wallet)</span><span class="bill-row__end">amount + .badge.badge--s</span><i chevron></i></a> in .bill-list (the last row has no line: set its bottom stroke to 0). status = the Badge: scheduled primary, paid success, failed danger.';
   }, { description: 'A Swing Pass charge: plan, date and wallet, amount and status.', variants: V });
 }
@@ -9279,7 +9429,7 @@ async function buildDateBtnPage(R, notes) {
     db[comp.name] = { d: d, t: t };
   }, function (s) {
     var pD = ensureProp(s, 'day', 'TEXT', 'FRI'), pT = ensureProp(s, 'date', 'TEXT', '16 Sep');
-    Object.keys(db).forEach(function (k) { db[k].d.componentPropertyReferences = { characters: pD }; db[k].t.componentPropertyReferences = { characters: pT }; });
+    wireKeys(db).forEach(function (k) { db[k].d.componentPropertyReferences = { characters: pD }; db[k].t.componentPropertyReferences = { characters: pT }; });
     s.description = '<button class="date-btn" aria-pressed><small>FRI</small>16 Sep</button> in .date-band__days (gap 4). 56 x 36, radius 8. selected = aria-pressed="true": purple-500 line, purple-50, date purple-500.';
   }, { description: 'A day to pick in the date strip.', variants: V });
 }
@@ -9298,7 +9448,7 @@ async function buildSessionTabPage(R, notes) {
     st[comp.name] = { i: i, t: await K.txt(comp, '--type-b3s', sel ? '--purple-500' : '--dark-300', sel ? 'Day session' : 'Night session', 'label') };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', I.day.id), pL = ensureProp(s, 'label', 'TEXT', 'Day session');
-    Object.keys(st).forEach(function (k) { st[k].i.componentPropertyReferences = { mainComponent: pI }; st[k].t.componentPropertyReferences = { characters: pL }; });
+    wireKeys(st).forEach(function (k) { st[k].i.componentPropertyReferences = { mainComponent: pI }; st[k].t.componentPropertyReferences = { characters: pL }; });
     s.description = '<button class="session-tab" role="tab" aria-selected>icon 14 + label</button> in .session-tabs at the bottom of the date band. Radius 16 on top; selected = white, purple-500, Elevation card s.';
   }, { description: 'A day / night session tab on the date band.', variants: V });
 }
@@ -9321,7 +9471,7 @@ async function buildRateCardPage(R, notes) {
     rc[comp.name] = { t: t, w: w, b: b, c: c };
   }, function (s) {
     var P = { t: ensureProp(s, 'time', 'TEXT', '05:30 - 06:00'), w: ensureProp(s, 'was', 'TEXT', 'Rp. 1,580,000'), b: ensureProp(s, 'price', 'TEXT', 'Rp. 1,422,000 / pax'), c: ensureProp(s, 'discount', 'TEXT', '-10%') };
-    Object.keys(rc).forEach(function (k) { Object.keys(P).forEach(function (f) { rc[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    wireKeys(rc).forEach(function (k) { wireKeys(P).forEach(function (f) { rc[k][f].componentPropertyReferences = { characters: P[f] }; }); });
     s.description = '<a class="rate-card">.rate-card__time + .rate-card__price (struck was, best + .rate-chip)</a> in .rate-grid (2 columns, gap 8 / 12). White, light-500 line, radius 16.';
   }, { description: 'A tee time slot with its price and discount.' });
 }
@@ -9338,7 +9488,7 @@ async function buildInclItemPage(R, notes) {
     it[comp.name] = { i: i, t: t };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ic.id), pT = ensureProp(s, 'label', 'TEXT', 'Green fee');
-    Object.keys(it).forEach(function (k) { it[k].i.componentPropertyReferences = { mainComponent: pI }; it[k].t.componentPropertyReferences = { characters: pT }; });
+    wireKeys(it).forEach(function (k) { it[k].i.componentPropertyReferences = { mainComponent: pI }; it[k].t.componentPropertyReferences = { characters: pT }; });
     s.description = '<span class="incl"><span><img 12>label</span><img tick 12></span> in .incl-grid (2 columns, gap 4). light-200, radius 8, 8 / 12.';
   }, { description: 'Something the price includes, with a tick.' });
 }
@@ -9352,7 +9502,7 @@ async function buildAmenityPage(R, notes) {
     am[comp.name] = { i: i, t: await K.txt(comp, '--type-b2s', '--dark-500', 'Club valet', 'label', 'fill') };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ic.id), pT = ensureProp(s, 'label', 'TEXT', 'Club valet');
-    Object.keys(am).forEach(function (k) { am[k].i.componentPropertyReferences = { mainComponent: pI }; am[k].t.componentPropertyReferences = { characters: pT }; });
+    wireKeys(am).forEach(function (k) { am[k].i.componentPropertyReferences = { mainComponent: pI }; am[k].t.componentPropertyReferences = { characters: pT }; });
     s.description = '<span class="amenity"><img 22>label</span> in .amenity-rail (4 rows, 220 columns, gap 8 / 12, scrolls sideways). light-200, radius 8, 12 / 16, gap 14.';
   }, { description: 'A course amenity with its icon.' });
 }
@@ -9364,7 +9514,7 @@ async function buildStatTilePage(R, notes) {
     sv[comp.name] = { l: await K.txt(comp, '--type-b3', '--dark-300', 'Holes', 'label', 'fill'), v: await K.txt(comp, '--type-b3s', '--dark-500', '18 holes', 'value', 'fill') };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Holes'), pV = ensureProp(s, 'value', 'TEXT', '18 holes');
-    Object.keys(sv).forEach(function (k) { sv[k].l.componentPropertyReferences = { characters: pL }; sv[k].v.componentPropertyReferences = { characters: pV }; });
+    wireKeys(sv).forEach(function (k) { sv[k].l.componentPropertyReferences = { characters: pL }; sv[k].v.componentPropertyReferences = { characters: pV }; });
     s.description = '<span class="stat-tile">label<b>value</b></span> in .stat-tiles (2 columns, gap 8 / 12). light-200, radius 8.';
   }, { description: 'A course fact: label and value.' });
 }
@@ -9537,7 +9687,7 @@ async function buildPayTypePage(R, notes) {
     pt[comp.name] = { i: i, t: await K.txt(comp, '--type-b3s', sel ? '--purple-500' : '--dark-300', sel ? 'Host pays for everyone' : 'Players pay for themselves', 'label', 'fill') };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ic.id), pL = ensureProp(s, 'label', 'TEXT', 'Host pays for everyone');
-    Object.keys(pt).forEach(function (k) { pt[k].i.componentPropertyReferences = { mainComponent: pI }; pt[k].t.componentPropertyReferences = { characters: pL }; });
+    wireKeys(pt).forEach(function (k) { pt[k].i.componentPropertyReferences = { mainComponent: pI }; pt[k].t.componentPropertyReferences = { characters: pL }; });
     s.description = '<button class="pay-type__opt" role="radio" aria-checked>icon 20 + label</button> in .pay-type (2 columns, gap 8). selected = aria-checked="true": purple-100 line, purple-50, purple-500, Elevation brand.';
   }, { description: 'Who pays: one of two options.', variants: V });
 }
@@ -9569,7 +9719,7 @@ async function buildPlayerRowPage(R, notes) {
     pr[comp.name] = p;
   }, function (s) {
     var P = { nm: ensureProp(s, 'name', 'TEXT', 'Alvin Lianto (Host)'), sub: ensureProp(s, 'sub', 'TEXT', 'Regular Swing player'), pr: ensureProp(s, 'price', 'TEXT', 'Rp. 1,222,000'), ad: ensureProp(s, 'action', 'TEXT', 'Add a player') };
-    Object.keys(pr).forEach(function (k) { Object.keys(P).forEach(function (f) { if (pr[k][f]) pr[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    wireKeys(pr).forEach(function (k) { wireKeys(P).forEach(function (f) { if (pr[k][f]) pr[k][f].componentPropertyReferences = { characters: P[f] }; }); });
     s.description = '<div class="player-row">avatar + .player-row__text (name H6, sub B3s) + .player-row__price (B3s + chevron)</div> in .player-list (white, line, radius 16; items 16 padding, line between). kind=host = the booker; player = a joined player (sub in green-700, .player-row__sub--paid; set the avatar initials on the nested Avatar); empty = an open slot with "Add a player" (.btn--text); own = an open slot when players pay for themselves. A Swing Pass member\'s sub is gradient text on the web; set the sub colour on the instance.';
   }, { description: 'A player slot in the booking.', variants: V });
 }
@@ -9594,7 +9744,7 @@ async function buildMiniRowPage(R, notes) {
     mr[comp.name] = { t: t, sb: sb, i: i };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Suvarna 10% Off (Weekday)'), pS = ensureProp(s, 'sub', 'TEXT', 'The best promo auto applied!'), pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', I.promo.id);
-    Object.keys(mr).forEach(function (k) { mr[k].t.componentPropertyReferences = { characters: pT }; if (mr[k].sb) mr[k].sb.componentPropertyReferences = { characters: pS }; mr[k].i.componentPropertyReferences = { mainComponent: pI }; });
+    wireKeys(mr).forEach(function (k) { mr[k].t.componentPropertyReferences = { characters: pT }; if (mr[k].sb) mr[k].sb.componentPropertyReferences = { characters: pS }; mr[k].i.componentPropertyReferences = { mainComponent: pI }; });
     s.description = '<a class="mini-row">icon 16 + title / sub + chevron</a> or <label class="mini-row">credits + switch</label> in a player breakdown. light-200, radius 8, padding 12, gap 12. The DS Switch has one size (40 x 24); the web uses .switch--s.';
   }, { description: 'A small promo or Swing Credits row under a player.', variants: V });
 }
@@ -9616,7 +9766,7 @@ async function buildPriceRowPage(R, notes) {
     pw[comp.name] = { l: l, v: val, sb: sb };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Alvin Lianto (Host)'), pV = ensureProp(s, 'value', 'TEXT', 'Rp. 1,222,000'), pS = ensureProp(s, 'sub', 'TEXT', 'Single Package');
-    Object.keys(pw).forEach(function (k) { pw[k].l.componentPropertyReferences = { characters: pL }; pw[k].v.componentPropertyReferences = { characters: pV }; if (pw[k].sb) pw[k].sb.componentPropertyReferences = { characters: pS }; });
+    wireKeys(pw).forEach(function (k) { pw[k].l.componentPropertyReferences = { characters: pL }; pw[k].v.componentPropertyReferences = { characters: pV }; if (pw[k].sb) pw[k].sb.componentPropertyReferences = { characters: pS }; });
     s.description = '<div class="price-row [price-row--total]"><span class="price-row__label [--inline]">…</span><span class="price-row__value">…</span></div> in .price-rows (gap 8). kind=total = .price-row--total (value B3s); info = an inline 12 info icon after the label. A struck published rate: set the value text to strikethrough on the instance.';
   }, { description: 'A label and amount in the price breakdown.', variants: V });
 }
@@ -9639,7 +9789,7 @@ async function buildPayBarPage(R, notes) {
     pb[comp.name] = { am: am, et: et };
   }, function (s) {
     var pA = ensureProp(s, 'amount', 'TEXT', 'Rp. 4,069,000'), pE = ensureProp(s, 'earn', 'TEXT', '+81,320 for all');
-    Object.keys(pb).forEach(function (k) { pb[k].am.componentPropertyReferences = { characters: pA }; pb[k].et.componentPropertyReferences = { characters: pE }; });
+    wireKeys(pb).forEach(function (k) { pb[k].am.componentPropertyReferences = { characters: pA }; pb[k].et.componentPropertyReferences = { characters: pE }; });
     s.description = '<div class="pay-bar"><div class="pay-bar__total"><span class="pay-bar__amount">…</span><button class="pay-bar__earn">credits + …</button></div><a class="btn">Pay … →</a></div> in the bottom bar. Gap 16; the total sits right-aligned next to the Button l (set its label on the instance).';
   }, { description: 'The total, the credits you earn, and the pay button.' });
 }
@@ -9871,7 +10021,7 @@ async function buildRefRowPage(R, notes) {
     rr[comp.name] = p;
   }, function (s) {
     var P = { nm: ensureProp(s, 'name', 'TEXT', 'Tio Saputra'), bd: ensureProp(s, 'body', 'TEXT', 'Joined on 15 May 2026'), rw: ensureProp(s, 'reward', 'TEXT', '100,000') };
-    Object.keys(rr).forEach(function (k) { Object.keys(P).forEach(function (f) { if (rr[k][f]) rr[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    wireKeys(rr).forEach(function (k) { wireKeys(P).forEach(function (f) { if (rr[k][f]) rr[k][f].componentPropertyReferences = { characters: P[f] }; }); });
     s.description = '<li class="ref-row">avatar + .ref-row__text (name, joined) + .ref-row__end</li> in .ref-list (gap 8). light-200, radius 16, 12 / 16, gap 12. booked=false: Send reminder; booked=true: the reward and a green tick. Set the initials on the nested Avatar.';
   }, { description: 'A referred friend and their status.', variants: V });
 }
@@ -10140,9 +10290,9 @@ async function buildComponents(names) {
       try {
         var r = await COMPONENTS[names[i]](R, notes);
         built.push(names[i] + ' (' + (r.label || r.count + ' variants') + ')');
-        var pg = r.set.parent; while (pg && pg.type !== 'PAGE') pg = pg.parent;
+        var rs = firstSetOf(r.set), pg = rs.parent; while (pg && pg.type !== 'PAGE') pg = pg.parent;
         await figma.setCurrentPageAsync(pg);
-        figma.viewport.scrollAndZoomIntoView([r.set.parent && r.set.parent.type === 'FRAME' ? r.set.parent : r.set]);
+        figma.viewport.scrollAndZoomIntoView([rs.parent && rs.parent.type === 'FRAME' ? rs.parent : rs]);
       } catch (e) { errors.push(names[i] + ': ' + e.message); }
     }
   } finally { LIB = null; }
@@ -10247,7 +10397,7 @@ async function fileStatus() {
   var R = await loadRegistry(), out = { vars: Object.keys(R.vars).length, text: Object.keys(R.text).length,
     effects: Object.keys(R.effects).length, icons: { line: 0, solid: 0 }, sets: [], lib: null };
   var lk = await figma.clientStorage.getAsync('libKeys');
-  if (lk && lk.sets) out.lib = { file: lk.file, at: lk.at, sets: Object.keys(lk.sets).length, names: Object.keys(lk.sets),
+  if (lk && lk.sets) out.lib = { file: lk.file, at: lk.at, sets: Object.keys(lk.sets).length, names: Object.keys(lk.logical || {}).concat(Object.keys(lk.sets)),
     tokens: ['vars', 'text', 'effects', 'paints'].reduce(function (a, k) { return a + Object.keys(lk[k] || {}).length; }, 0) };
   for (var i = 0; i < figma.root.children.length; i++) {
     var pg = figma.root.children[i];
@@ -10257,7 +10407,7 @@ async function fileStatus() {
     if (screen) {   // a screen counts as built when its frame is there
       var sn = pg.name.slice('Screen / '.length);
       if (pg.children.some(function (n) { return n.type === 'FRAME' && n.name === sn; })) out.sets.push('screen:' + sn);
-      pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { var b = s.name.split('/').pop(); if (UI_PARTS[b]) out.sets.push(b); });   // UI components live here (Home/ProductCard)
+      pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { var b = setTag(s).logical || s.name.split('/').pop(); if (UI_PARTS[b] && out.sets.indexOf(b) < 0) out.sets.push(b); });   // UI components live here (Home/swing_product_card)
       continue;
     }
     if (pg.name === 'Icons') {
@@ -10266,7 +10416,7 @@ async function fileStatus() {
         else if (c.name.indexOf('Icon/Solid/') === 0) out.icons.solid++;
       });
     } else {
-      pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { out.sets.push(s.name); });
+      pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { var b = setTag(s).logical || s.name; if (out.sets.indexOf(b) < 0) out.sets.push(b); });
       pg.children.forEach(function (n) { if (n.type === 'FRAME' && (n.name === 'Color' || n.name === 'Typography') && n.children.length) out.sets.push(n.name); });   // foundation pages have artboards, not sets
     }
   }

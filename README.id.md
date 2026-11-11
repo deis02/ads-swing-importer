@@ -61,6 +61,14 @@ Section **Icons** ngebaca `icons/index.json` yang satu folder sama Source URL. T
 ## Components
 Section **Components** bikin component set di page **Components**, langsung nyambung ke token yang udah di-import. Kalau di-build ulang, variant dicari lewat nama terus diupdate di tempat, jadi instance yang udah dipakai tetap nyambung.
 
+### Nama swing
+Semua component set dinamain `swing_<part>` pakai snake case: `swing_btn`, `swing_text_field`, `Home/swing_product_card` (folder layarnya tetap, biar panel Assets kekelompok). Set yang punya property jenis (`tone`, `type`, `kind`, atau `control`) dipecah jadi satu set per jenis, dan namanya ikut jenisnya: `swing_btn_primary`, `swing_btn_neutral`, `swing_text_field_password`, `swing_app_bar_home_search`. Tiap jenis punya artboard sendiri. Nama variant di dalamnya tetap nyebut jenisnya (`tone=primary`), jadi di Dev Mode jenisnya tetap kebaca. Kalau mau ganti jenis, pakai instance swap.
+
+File yang di-build sebelum ada nama swing bakal di-rename dan dipecah di tempat waktu di-Update. Tiap variant tetap node yang sama, jadi instance yang udah ditaruh tetap nyambung. Abis itu, publish library-nya dan jalanin **Export library keys** lagi di file DS. Kalau nggak, file UI masih nyari nama lama.
+
+Nama instance di layar ngikutin set-nya: `swing_btn_primary · size=m, appearance=solid, state=default`.
+
+Tabel di bawah pakai nama part yang dipakai kode (`Button`). Di Figma, part itu adalah set `swing_btn_*`.
 
 Nama di Figma = nama di kode, jadi developer bisa baca instance terus langsung nulis markup-nya:
 
