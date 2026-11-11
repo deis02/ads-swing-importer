@@ -61,6 +61,7 @@ Section **Icons** ngebaca `icons/index.json` yang satu folder sama Source URL. T
 ## Components
 Section **Components** bikin component set di page **Components**, langsung nyambung ke token yang udah di-import. Kalau di-build ulang, variant dicari lewat nama terus diupdate di tempat, jadi instance yang udah dipakai tetap nyambung.
 
+
 Nama di Figma = nama di kode, jadi developer bisa baca instance terus langsung nulis markup-nya:
 
 | Figma | Kode |
@@ -117,6 +118,8 @@ Semua page (satu page per grup component, tiap set di artboard sendiri lengkap d
 | AppBar | Brand 2, AppBar 16 (termasuk type=homeSearch, dan type=ads: panah back ADS + tombol negara) |
 | Card | Media 16, Card 4, Stat 2 |
 | ActionCard | ActionCard 24 |
+| FeaturedPromo | FeaturedPromo 2 (state default · claimed) |
+| CashbackTable | CashbackTable 2 (current regular · pass) |
 | CourseCard | CourseCard 4, CardRail 1, Carousel 1 |
 | Sheet | SheetHead 4, ShareApp 1, Sheet 5 |
 | Search | SearchRow 4, SearchBar 2, SearchPanel 2 |

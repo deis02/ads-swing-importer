@@ -61,6 +61,7 @@ The owner makes access keys on the sync page under **Access keys** (one per pers
 ## Components
 **Components** builds component sets on a **Components** page, bound to the imported tokens. Rebuilding matches variants by name and updates them in place, so instances stay linked.
 
+
 Names in Figma are the names in code, so a developer can read an instance and write the markup:
 
 | Figma | Code |
@@ -117,6 +118,8 @@ All pages (one page per component group, each set on its own artboard with the c
 | AppBar | Brand 2, AppBar 16 (with type=homeSearch, and type=ads: ADS back arrow + country button) |
 | Card | Media 16, Card 4, Stat 2 |
 | ActionCard | ActionCard 24 |
+| FeaturedPromo | FeaturedPromo 2 (state default · claimed) |
+| CashbackTable | CashbackTable 2 (current regular · pass) |
 | CourseCard | CourseCard 4, CardRail 1, Carousel 1 |
 | Sheet | SheetHead 4, ShareApp 1, Sheet 5 |
 | Search | SearchRow 4, SearchBar 2, SearchPanel 2 |

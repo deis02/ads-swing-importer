@@ -544,7 +544,10 @@ function effectName(css) {
 
 // --gradient-purple -> Gradient/Brand/purple, --glass-fill -> Gradient/Surface/glass-fill,
 // --deal-scrim -> Gradient/Overlay/deal-scrim
+// Paint style names the file already uses (Ghais 11 Nov: the Swing Pass gradient is "Gradient/Brand/purple-sp")
+var PAINT_NAMES = { '--gradient-swing-pass': 'Gradient/Brand/purple-sp' };
 function paintName(css) {
+  if (PAINT_NAMES[css]) return PAINT_NAMES[css];
   var s = css.replace(/^--/, '').replace(/^gradient-|-gradient$/g, '');
   var g = /scrim|overlay|fade/.test(s) ? 'Overlay' : /glass|card|surface|bg|background/.test(s) ? 'Surface' : 'Brand';
   return 'Gradient/' + g + '/' + s;
@@ -876,6 +879,8 @@ async function importPlan(plan, opts) {
     plan.paints.forEach(function (t) {
       try {
         var st = pdesc[t.css] || pmap[t.name];
+        // a style the file made itself under the agreed name (Gradient/Brand/purple-sp is the ADS fill): use it, never overwrite it
+        if (PAINT_NAMES[t.css] && pmap[t.name] && pmap[t.name] !== pdesc[t.css]) return;
         if (st) { res.updated++; if (st.name !== t.name) { st.name = t.name; res.renamed++; } }
         else { st = figma.createPaintStyle(); st.name = t.name; res.created++; }
         st.paints = t.paints;
@@ -1070,7 +1075,9 @@ async function exportLibraryKeys() {
   Object.keys(R.vars).forEach(function (k) { if (/:(size|line-height|letter-spacing)$/.test(k)) return; out.vars[k] = R.vars[k].key; if (R.color[k]) out.color[k] = R.color[k]; });
   Object.keys(R.text).forEach(function (k) { out.text[k] = R.text[k].key; });
   Object.keys(R.effects).forEach(function (k) { out.effects[k] = R.effects[k].key; });
-  (await figma.getLocalPaintStylesAsync()).forEach(function (s) { var k = (s.description || '').split('\n')[0]; if (/^--/.test(k)) out.paints[k] = s.key; });
+  var lps = await figma.getLocalPaintStylesAsync(), pnames = {};
+  lps.forEach(function (s) { var k = (s.description || '').split('\n')[0]; if (/^--/.test(k)) out.paints[k] = s.key; pnames[s.name] = s.key; });
+  Object.keys(PAINT_NAMES).forEach(function (css) { if (pnames[PAINT_NAMES[css]]) out.paints[css] = pnames[PAINT_NAMES[css]]; });
   await figma.clientStorage.setAsync('libKeys', out);
   return { file: out.file, sets: Object.keys(out.sets).length, comps: Object.keys(out.comps).length, vars: Object.keys(out.vars).length,
     styles: Object.keys(out.text).length + Object.keys(out.effects).length + Object.keys(out.paints).length };
@@ -6308,9 +6315,14 @@ async function refIcon(R, name, path, size, css, notes, page) {
 async function paintStyleFor(R, css) {
   if (!R.pstyles) {
     R.pstyles = {};
-    (await figma.getLocalPaintStylesAsync()).forEach(function (s) { var k = (s.description || '').split('\n')[0]; if (/^--/.test(k)) R.pstyles[k] = s; });
+    var byName = {};
+    (await figma.getLocalPaintStylesAsync()).forEach(function (s) { var k = (s.description || '').split('\n')[0]; if (/^--/.test(k)) R.pstyles[k] = s; byName[s.name] = s; });
+    R.pstylesByName = byName;
   }
-  return R.pstyles[css] || null;
+  // a style named the way this plugin names it counts even without the CSS name in its description
+  var named = R.pstylesByName && R.pstylesByName[paintName(css)];
+  if (named && PAINT_NAMES[css]) return named;   // the file's own agreed style wins over an older one this plugin made
+  return R.pstyles[css] || named || null;
 }
 async function fillStyle(R, node, css, fallbackCss) {   // gradients live as paint styles
   var st = await paintStyleFor(R, css);
@@ -6324,7 +6336,23 @@ async function effectStyle(R, node, css) {
 function padX(R, f) { bindNumber(R, f, 'paddingLeft', '--page-x', 24); bindNumber(R, f, 'paddingRight', '--page-x', 24); }
 function fillHug(f) { f.layoutSizingHorizontal = 'FILL'; f.layoutSizingVertical = 'HUG'; }
 function hugHug(f) { f.layoutSizingHorizontal = 'HUG'; f.layoutSizingVertical = 'HUG'; }
-function setText(inst, plain) { try { inst.setProperties(propsFor(inst, plain)); } catch (e) { /* keep defaults */ } }
+function setText(inst, plain) {
+  try { inst.setProperties(propsFor(inst, plain)); } catch (e) { /* keep defaults */ }
+  // a swapped icon comes in with its own colour (dark): give it the button's label colour again (Ghais 11 Nov: dark chevron on Join)
+  if (plain && (plain.iconStart || plain.iconEnd)) tintSwappedIcons(inst);
+}
+function tintSwappedIcons(inst) {
+  // Found by structure, not by layer name: a swapped nested instance can come back under the icon's own name.
+  // The colour is copied as a plain colour: a fill that carries the label's variable binding can be refused.
+  var label = inst.findOne && inst.findOne(function (n) { return n.type === 'TEXT' && n.name === 'label'; });
+  var lf = label && label.fills, p0 = lf && lf !== figma.mixed && lf.length ? lf[0] : null;
+  if (!p0 || p0.type !== 'SOLID') return;
+  var paint = { type: 'SOLID', color: { r: p0.color.r, g: p0.color.g, b: p0.color.b }, opacity: p0.opacity == null ? 1 : p0.opacity };
+  (inst.findAll ? inst.findAll(function (n) { return n.type === 'INSTANCE'; }) : []).forEach(function (ic) {
+    var shape = ic.findOne(function (n) { return n.name === 'Icon'; });
+    if (shape) { try { shape.fills = [paint]; } catch (e) { /* keep */ } }
+  });
+}
 
 /* ----- DS parts from Home V5 (components.css: .photo-tile, .pass-upsell, .section-head, .product-card,
    .promo-banner, .help-card, .link-card). Each is its own DS page, like Button, so every screen
@@ -6572,6 +6600,155 @@ async function buildHelpCardPage(R, notes) {
     s.description = '<section class="help-card"><img class="help-card__art"><h2 class="help-card__title">{title}</h2><ul class="help-card__list">…</ul><a class="btn btn--s btn--tertiary">…</a></section>. 218 tall, radius 16, gradient-help-card, agent art at 188/16 (311 x 216, cropped), title H6, list B3 with 12 dots, button bottom-left 16.';
   }, { description: 'The call center card: what support can help with, and a button to reach it.',
     code: ['<section class="help-card"><img class="help-card__art" src="…" alt=""><h2 class="help-card__title">…</h2><ul class="help-card__list">…</ul><a class="btn btn--s btn--tertiary">…</a></section>'] });
+}
+
+async function buildFeaturedPromoPage(R, notes) {
+  // components.css .featured-promo (Figma Swing Web App 6131:52581, Ghais 11 Nov)
+  var fp = {}, btnSet = await setFrom('Button', 'Button', buildButton, R, notes);
+  var solidS = byName(btnSet)['size=s, tone=primary, appearance=solid, state=default'];
+  var tick = null;
+  // the first build (11 Nov) had one variant "type=default": rename it so placed instances stay linked
+  var oldPage = figma.root.children.filter(function (p) { return p.name === 'FeaturedPromo'; })[0];
+  if (oldPage) {
+    await oldPage.loadAsync();
+    var oldSet = oldPage.findOne(function (n) { return isUiSet(n, 'FeaturedPromo'); });
+    var oldV = oldSet && oldSet.children.filter(function (c) { return c.name === 'type=default'; })[0];
+    if (oldV && !oldSet.children.some(function (c) { return c.name === 'state=default'; })) oldV.name = 'state=default';
+  }
+  return buildPartPage(R, notes, 'FeaturedPromo', async function (comp, K, page, v) {
+    var claimed = v && v.name === 'state=claimed';
+    comp.layoutMode = 'HORIZONTAL'; comp.counterAxisAlignItems = 'CENTER';
+    comp.resize(343, 80); comp.layoutSizingHorizontal = 'FIXED'; comp.layoutSizingVertical = 'HUG';
+    comp.itemSpacing = 0; comp.clipsContent = true;
+    bindRadius(R, comp, '--radius-12', 12);
+    comp.fills = paintFor(R, '--light-100');
+    comp.strokes = paintFor(R, '--purple-500'); comp.strokeWeight = 1; comp.strokeAlign = 'INSIDE';
+    var strip = autoFrame('pass strip', 'HORIZONTAL', comp); strip.counterAxisAlignItems = 'CENTER';
+    strip.layoutSizingHorizontal = 'HUG'; strip.layoutAlign = 'STRETCH';
+    bindNumber(R, strip, 'paddingLeft', '--space-8', 8); bindNumber(R, strip, 'paddingRight', '--space-8', 8);
+    await fillStyle(R, strip, '--gradient-swing-pass', '--purple-500');
+    await refArt(R, strip, 'ref/img/fp/pass-mark-w.svg?v=1', 20, 20, 'pass mark', notes);
+    var body = autoFrame('body', 'HORIZONTAL', comp); fillHug(body); body.counterAxisAlignItems = 'MAX';
+    ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom'].forEach(function (f) { bindNumber(R, body, f, '--space-16', 16); });
+    bindNumber(R, body, 'itemSpacing', '--space-16', 16);
+    var tx = autoFrame('text', 'VERTICAL', body); fillHug(tx); bindNumber(R, tx, 'itemSpacing', '--space-4', 4);
+    var t = await K.txt(tx, '--type-b2s', '--dark-500', 'Rp 999,000 · Sun & PH PM Deal at Suvarna Jakarta Golf Club', 'title', 'fill');
+    try { t.textTruncation = 'ENDING'; t.maxLines = 2; } catch (e) { /* older API */ }
+    var g = await K.txt(tx, '--type-b3s', '--purple-500', 'Swing Pass Exclusive', 'tag');
+    var st = null;
+    if (claimed) {   // .featured-promo__status: Button S size, Light 300, CTA S Dark 300, green tick 16
+      if (!tick) tick = (await findIcon('Icon/Solid/tick-circle')) || (await iconOrPlaceholder('Icon/Line/tick-circle', page, notes));
+      var sf = autoFrame('status', 'HORIZONTAL', body); sf.counterAxisAlignItems = 'CENTER';
+      sf.resize(80, 32); sf.layoutSizingHorizontal = 'HUG'; sf.layoutSizingVertical = 'FIXED';
+      bindNumber(R, sf, 'paddingLeft', '--space-12', 12); bindNumber(R, sf, 'paddingRight', '--space-12', 12);
+      bindNumber(R, sf, 'itemSpacing', '--space-4', 4); bindRadius(R, sf, '--radius-8', 8);
+      sf.fills = paintFor(R, '--light-300');
+      var ic = tick.createInstance(); sf.appendChild(ic); ic.name = 'tick'; ic.resize(16, 16); recolorIcon(R, ic, '--green-500');
+      st = await K.txt(sf, '--type-cta-s', '--dark-300', 'Active', 'status');
+    } else {
+      var b = solidS.createInstance(); body.appendChild(b); b.name = 'button';
+      setText(b, { label: 'Join', showIconEnd: true, iconEnd: K.I.chev.id });
+      // white chevron, bound to the token (setText's copy is unbound)
+      b.findAll(function (n) { return n.type === 'INSTANCE' && !!n.findOne(function (k) { return k.name === 'Icon'; }); }).forEach(function (ic) { recolorIcon(R, ic, '--light-100'); });
+    }
+    fp[comp.name] = { t: t, g: g, st: st };
+  }, function (s) {
+    var pT = ensureProp(s, 'title', 'TEXT', 'Rp 999,000 · Sun & PH PM Deal at Suvarna Jakarta Golf Club');
+    var pG = ensureProp(s, 'tag', 'TEXT', 'Swing Pass Exclusive');
+    var pS = ensureProp(s, 'status', 'TEXT', 'Active');
+    Object.keys(fp).forEach(function (k) {
+      fp[k].t.componentPropertyReferences = { characters: pT }; fp[k].g.componentPropertyReferences = { characters: pG };
+      if (fp[k].st) fp[k].st.componentPropertyReferences = { characters: pS };
+    });
+    s.description = '<a class="featured-promo"><span class="featured-promo__mark"></span><span class="featured-promo__body"><span class="featured-promo__text"><span class="featured-promo__title">{title}</span><span class="featured-promo__tag">{tag}</span></span><span class="btn btn--s">Join + chevron-right</span></span></a>. ' +
+      'Purple 500 line 1, radius 12; strip padding 0 8 on gradient-swing-pass with the white pass mark 20; body padding 16, gap 16, button on the bottom line; title B2 Semibold 2 lines, tag B3 Semibold Purple 500. ' +
+      'state=claimed: <span class="featured-promo__status">{status}</span> in the button\'s place, 32 tall, padding 0 12, gap 4, radius 8, Light 300, CTA S Dark 300, green tick 16.';
+  }, { variants: [{ name: 'state=default' }, { name: 'state=claimed' }], colLabel: 'state',
+    description: 'One deal that only Swing Pass members get. The whole card is the link; the Join button inside only marks it. Source: Figma Swing Web App 6131:52581.',
+    code: ['<a class="featured-promo" href="…"><span class="featured-promo__mark" aria-hidden="true"></span><span class="featured-promo__body"><span class="featured-promo__text"><span class="featured-promo__title">…</span><span class="featured-promo__tag">Swing Pass Exclusive</span></span><span class="btn btn--s">Join<i class="icon">…chevron-right…</i></span></span></a>', 'state=claimed: <span class="featured-promo__status">Active</span> instead of the button'] });
+}
+
+async function buildCashbackTablePage(R, notes) {
+  // components.css .cashback-table (Figma Swing Web App 271:7933 "Cashback details", Ghais 11 Nov)
+  var ct = {}, W = 343;
+  var ROWS = [['Mon - Fri', '05:00 - 12:00', '10%', '50%'], ['Mon - Fri', '12:00 - 20:00', '8%', '40%'], ['Sat - Sun', '05:00 - 20:00', '8%', '40%']];
+  function lineUnder(f, on) {   // border-bottom 1px light-500
+    f.strokes = paintFor(R, '--light-500'); f.strokeAlign = 'INSIDE';
+    f.strokeTopWeight = 0; f.strokeLeftWeight = 0; f.strokeRightWeight = 0; f.strokeBottomWeight = on ? 1 : 0;
+  }
+  // every column is exactly a third: FILL let Figma give a header cell a different width than the cells under it (Ghais 11 Nov)
+  function cell(parent, name, dir) {
+    var c = autoFrame(name, dir || 'VERTICAL', parent); c.resize(W / 3, 40); c.layoutSizingHorizontal = 'FIXED'; c.layoutSizingVertical = 'FILL';
+    return c;
+  }
+  return buildPartPage(R, notes, 'CashbackTable', async function (comp, K, page, v) {
+    var here = v && v.name === 'current=pass' ? 2 : 1;
+    comp.layoutMode = 'VERTICAL'; comp.resize(W, 300); comp.layoutSizingHorizontal = 'FIXED'; comp.layoutSizingVertical = 'HUG';
+    comp.itemSpacing = 0; comp.fills = paintFor(R, '--light-100');
+    // "You are here" over the current plan
+    var hr = autoFrame('here', 'HORIZONTAL', comp); fillHug(hr); hr.counterAxisAlignItems = 'MAX';
+    var hereText = null;
+    for (var i = 0; i < 3; i++) {
+      var slot = autoFrame('slot ' + (i + 1), 'VERTICAL', hr); slot.resize(W / 3, 1); slot.layoutSizingHorizontal = 'FIXED'; slot.layoutSizingVertical = 'HUG';
+      if (i !== here) continue;
+      var tab = autoFrame('you are here', 'VERTICAL', slot); fillHug(tab); tab.counterAxisAlignItems = 'CENTER';
+      bindNumber(R, tab, 'paddingTop', '--space-8', 8); bindNumber(R, tab, 'paddingBottom', '--space-8', 8);
+      bindNumber(R, tab, 'paddingLeft', '--space-12', 12); bindNumber(R, tab, 'paddingRight', '--space-12', 12);
+      bindNumber(R, tab, 'topLeftRadius', '--radius-8', 8); bindNumber(R, tab, 'topRightRadius', '--radius-8', 8);
+      tab.fills = paintFor(R, '--green-500');
+      hereText = await K.txt(tab, '--type-b2s', '--light-100', 'You are here', 'label', 'fill'); hereText.textAlignHorizontal = 'CENTER';
+    }
+    // the table: header + rows, with the Swing Pass outline on top
+    var tb = autoFrame('table', 'VERTICAL', comp); fillHug(tb); tb.itemSpacing = 0;
+    var head = autoFrame('plans', 'HORIZONTAL', tb); fillHug(head);
+    cell(head, 'corner');
+    var plans = [['Regular Swing players', '--light-200', 'ref/img/cbt/albatross-mark.svg?v=1'], ['Swing Pass members', '--purple-50', 'ref/img/cbt/pass-mark.svg?v=1']];
+    for (var p = 0; p < 2; p++) {
+      var pc = cell(head, p ? 'swing pass' : 'regular'); pc.counterAxisAlignItems = 'CENTER'; pc.primaryAxisAlignItems = 'CENTER';
+      bindNumber(R, pc, 'paddingTop', '--space-16', 16); bindNumber(R, pc, 'paddingBottom', '--space-16', 16);
+      bindNumber(R, pc, 'paddingLeft', '--space-12', 12); bindNumber(R, pc, 'paddingRight', '--space-12', 12);
+      bindNumber(R, pc, 'itemSpacing', '--space-8', 8);
+      pc.fills = paintFor(R, plans[p][1]); lineUnder(pc, true);
+      if (p) bindNumber(R, pc, 'topRightRadius', '--radius-16', 16);
+      var mk = await refArt(R, pc, plans[p][2], 32, 32, 'mark', notes);
+      if (p) { for (var vec of mk.findAll ? mk.findAll(function (n) { return n.type === 'VECTOR'; }) : []) await fillStyle(R, vec, '--gradient-swing-pass', '--purple-500'); }
+      else refTint(R, mk, '--dark-300');
+      var pl = await K.txt(pc, '--type-b2s', '--dark-500', plans[p][0], 'label', 'fill'); pl.textAlignHorizontal = 'CENTER';
+    }
+    for (var r = 0; r < ROWS.length; r++) {
+      var last = r === ROWS.length - 1, row = autoFrame('row ' + (r + 1), 'HORIZONTAL', tb); fillHug(row);
+      var lc = cell(row, 'slot'); lc.primaryAxisAlignItems = 'CENTER'; lineUnder(lc, true);
+      bindNumber(R, lc, 'paddingTop', '--space-16', 16); bindNumber(R, lc, 'paddingBottom', '--space-16', 16);
+      bindNumber(R, lc, 'paddingLeft', '--space-16', 16); bindNumber(R, lc, 'paddingRight', '--space-8', 8);
+      bindNumber(R, lc, 'itemSpacing', '--space-4', 4);
+      await K.txt(lc, '--type-b1s', '--dark-500', ROWS[r][0], 'day', 'fill');
+      await K.txt(lc, '--type-b2', '--dark-300', ROWS[r][1], 'time', 'fill');
+      for (var q = 0; q < 2; q++) {
+        var vc = cell(row, q ? 'swing pass' : 'regular'); vc.counterAxisAlignItems = 'CENTER'; vc.primaryAxisAlignItems = 'CENTER';
+        bindNumber(R, vc, 'paddingTop', '--space-16', 16); bindNumber(R, vc, 'paddingBottom', '--space-16', 16);
+        bindNumber(R, vc, 'paddingLeft', '--space-12', 12); bindNumber(R, vc, 'paddingRight', '--space-12', 12);
+        vc.fills = paintFor(R, q ? '--purple-50' : '--light-200'); lineUnder(vc, !(q && last));
+        if (q && last) bindNumber(R, vc, 'bottomRightRadius', '--radius-16', 16);
+        var val = await K.txt(vc, '--type-h5', q ? '--dark-500' : '--dark-300', ROWS[r][q ? 3 : 2], 'value', 'fill'); val.textAlignHorizontal = 'CENTER';
+        var un = await K.txt(vc, '--type-b2', '--dark-300', 'cashback', 'unit', 'fill'); un.textAlignHorizontal = 'CENTER';
+      }
+    }
+    var ol = figma.createRectangle(); tb.appendChild(ol); ol.name = 'swing pass outline';
+    ol.layoutPositioning = 'ABSOLUTE'; ol.resize(W / 3, tb.height); ol.x = W - W / 3; ol.y = 0;
+    ol.constraints = { horizontal: 'MAX', vertical: 'STRETCH' };
+    ol.fills = []; ol.strokes = paintFor(R, '--purple-500'); ol.strokeWeight = 2; ol.strokeAlign = 'INSIDE';
+    bindNumber(R, ol, 'topRightRadius', '--radius-16', 16); bindNumber(R, ol, 'bottomRightRadius', '--radius-16', 16);
+    ct[comp.name] = { here: hereText };
+  }, function (s) {
+    var pH = ensureProp(s, 'here', 'TEXT', 'You are here');
+    Object.keys(ct).forEach(function (k) { if (ct[k].here) ct[k].here.componentPropertyReferences = { characters: pH }; });
+    s.description = '<table class="cashback-table">: "You are here" tab (Green 500, radius 8 top, B2 Semibold white, padding 8 12) over the current plan; ' +
+      'plan headers mark 32 + B2 Semibold, padding 16 12, gap 8 (Regular Light 200, Swing Pass Purple 50 radius 16 top right); ' +
+      'rows: slot B1 Semibold + B2 Dark 300, padding 16 8 16 16; values H5 + "cashback" B2, padding 16 12; Light 500 line under every row; ' +
+      '2px Purple 500 outline round the Swing Pass column, radius 16 on the right. current=regular / current=pass moves the tab. Three equal columns, 343 wide here.';
+  }, { variants: [{ name: 'current=regular' }, { name: 'current=pass' }], colLabel: 'current',
+    description: 'Cashback a regular player and a Swing Pass member get, per time slot. Source: Figma Swing Web App 271:7933.',
+    code: ['<table class="cashback-table"><thead><tr class="cashback-table__here"><td></td><td><span class="cashback-table__you">You are here</span></td><td></td></tr><tr><td></td><th class="cashback-table__plan">…Regular Swing players</th><th class="cashback-table__plan cashback-table__pass">…Swing Pass members</th></tr></thead><tbody><tr><th scope="row">…day + time…</th><td>…10% cashback…</td><td class="cashback-table__pass">…50% cashback…</td></tr></tbody></table>'] });
 }
 
 async function buildLinkCardPage(R, notes) {
@@ -9925,7 +10102,7 @@ var COMPONENTS = { Color: buildColorPage, Typography: buildTypographyPage, Butto
   Toaster: buildToasterPage, Tooltip: buildTooltipPage,
   Steps: buildStepsPage, Review: buildReviewPage,
   BottomNav: buildBottomNavPage, AppBar: buildAppBarPage,
-  Card: buildCardPage, ActionCard: buildActionCardPage,
+  Card: buildCardPage, ActionCard: buildActionCardPage, FeaturedPromo: buildFeaturedPromoPage, CashbackTable: buildCashbackTablePage,
   CourseCard: buildCourseCardPage, Sheet: buildSheetPage,
   Search: buildSearchPage, DatePicker: buildDatePickerPage, TimePicker: buildTimePickerPage,
   SwingPass: buildSwingPassPage, Accordion: buildAccordionPage,
@@ -10075,7 +10252,7 @@ async function fileStatus() {
   for (var i = 0; i < figma.root.children.length; i++) {
     var pg = figma.root.children[i];
     var screen = /^Screen \/ /.test(pg.name);
-    if (!screen && ['Color', 'Typography', 'Icons', 'Button', 'Badge', 'Tag', 'Loading', 'Checkbox', 'Radio', 'Switch', 'Check', 'TextField', 'Select', 'Menu', 'List', 'Tabs', 'Divider', 'Avatar', 'Caption', 'Pagination', 'Rating', 'Stepper', 'Pin', 'Slider', 'Toaster', 'Tooltip', 'Steps', 'Review', 'BottomNav', 'AppBar', 'Card', 'ActionCard', 'CourseCard', 'Sheet', 'Search', 'DatePicker', 'TimePicker', 'SwingPass', 'Accordion', 'PhotoTile', 'PassUpsell', 'SectionHead', 'ProductCard', 'PromoBanner', 'HelpCard', 'LinkCard'].indexOf(pg.name) < 0) continue;
+    if (!screen && ['Color', 'Typography', 'Icons', 'Button', 'Badge', 'Tag', 'Loading', 'Checkbox', 'Radio', 'Switch', 'Check', 'TextField', 'Select', 'Menu', 'List', 'Tabs', 'Divider', 'Avatar', 'Caption', 'Pagination', 'Rating', 'Stepper', 'Pin', 'Slider', 'Toaster', 'Tooltip', 'Steps', 'Review', 'BottomNav', 'AppBar', 'Card', 'ActionCard', 'FeaturedPromo', 'CashbackTable', 'CourseCard', 'Sheet', 'Search', 'DatePicker', 'TimePicker', 'SwingPass', 'Accordion', 'PhotoTile', 'PassUpsell', 'SectionHead', 'ProductCard', 'PromoBanner', 'HelpCard', 'LinkCard'].indexOf(pg.name) < 0) continue;
     await pg.loadAsync();
     if (screen) {   // a screen counts as built when its frame is there
       var sn = pg.name.slice('Screen / '.length);
