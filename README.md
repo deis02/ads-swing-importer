@@ -39,6 +39,8 @@ Tokens Figma has no direct slot for are adapted, not skipped:
 Add it to `networkAccess.allowedDomains` in `manifest.json`, then re-import the manifest.
 
 ## Send changes to the web (Figma → tokens.css)
+> **Currently hidden.** The section is switched off in the plugin. To turn it back on, remove `hidden` from `<div class="sec" id="syncSec" hidden>` in `ui.html` and re-import the manifest. The server side still runs.
+
 Variables edited in the DS file (ADS TESTING) can be written straight into `tokens.css`. There is no approval step: every update is backed up and can be undone.
 
 1. In the **Tokens** tab, under **Send to web**, enter your **Access key** (`sds_...`). It is kept in your own Figma.

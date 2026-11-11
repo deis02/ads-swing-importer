@@ -39,6 +39,8 @@ Token yang nggak punya tempat langsung di Figma disesuaiin, nggak dilewatin:
 Tambahin di `networkAccess.allowedDomains` di `manifest.json`, terus import ulang manifest-nya.
 
 ## Kirim perubahan ke web (Figma → tokens.css)
+> **Lagi disembunyiin.** Bagian ini dimatiin di plugin. Kalau mau dinyalain lagi, hapus `hidden` dari `<div class="sec" id="syncSec" hidden>` di `ui.html`, terus import ulang manifest-nya. Server-nya tetap jalan.
+
 Kalau ada yang ngubah variable di file DS (ADS TESTING), perubahannya bisa langsung ditulis ke `tokens.css`. Nggak perlu approval. Tiap update di-backup, dan bisa di-Undo.
 
 1. Di tab **Tokens**, bagian **Send to web**, isi **Access key** (`sds_...`). Key ini disimpan di Figma lo sendiri.
