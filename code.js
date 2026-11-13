@@ -1574,7 +1574,8 @@ var BTN_TONES = {
     ghost: ['--purple-600', '--purple-50'], tertiary: ['--light-300', '--light-500', '--purple-500'] },
   neutral: { solid: ['--dark-500', '--dark-400', '--light-100'], soft: ['--light-300', '--light-500', '--light-500', '--dark-500'],
     ghost: ['--dark-500', '--light-300'], tertiary: ['--light-200', '--light-300', '--dark-300'] },
-  danger: { solid: ['--red-700', '--red-press', '--light-100'], soft: ['--red-50', '--red-100', '--red-100', '--red-700'],
+  danger: { solid: ['--red-500', '--red-600', '--light-100'],   // Red 500, pressed Red 600 (like purple and green; --red-press is not a token, Ghais 13 Nov)
+    soft: ['--red-50', '--red-100', '--red-100', '--red-700'],
     ghost: ['--red-700', '--red-50'], tertiary: ['--light-300', '--light-500', '--red-500'] },   // tertiary = .btn--tertiary.btn--danger (QRIS: Cancel payment)
   // .btn--success: the success token (green-500), pressed green-600 (Ghais' rule 09 Nov)
   success: { solid: ['--color-success', '--green-600', '--light-100'] },
@@ -1899,7 +1900,7 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
 var SC_W = 342, SC_H = 56, SC_PAD = 4, SC_THUMB = 48, SC_DRAG_P = 0.5;
 var SC_TONES = {
   primary: { track: '--purple-50', ring: '--purple-100', label: '--purple-600', fill: '--purple-500', thumb: '--purple-500', thumbDrag: '--purple-600' },
-  danger: { track: '--red-50', ring: '--red-100', label: '--red-700', fill: '--red-700', thumb: '--red-700', thumbDrag: '--red-press' }
+  danger: { track: '--red-50', ring: '--red-100', label: '--red-700', fill: '--red-700', thumb: '--red-700', thumbDrag: '--red-600' }   // --red-press is not a token
 };
 var SC_STATES = ['default', 'dragging', 'loading', 'disabled'];
 
