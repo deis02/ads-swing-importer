@@ -1574,11 +1574,11 @@ var BTN_TONES = {
     ghost: ['--purple-600', '--purple-50'], tertiary: ['--light-300', '--light-500', '--purple-500'] },
   neutral: { solid: ['--dark-500', '--dark-400', '--light-100'], soft: ['--light-300', '--light-500', '--light-500', '--dark-500'],
     ghost: ['--dark-500', '--light-300'], tertiary: ['--light-200', '--light-300', '--dark-300'] },
-  danger: { solid: ['--red-500', '--red-600', '--light-100'],   // Red 500, pressed Red 600 (like purple and green; --red-press is not a token, Ghais 13 Nov)
+  danger: { solid: ['--red-500', '--red-700', '--light-100'],   // Red 500, pressed Red 700 (Ghais 13 Nov; --red-press is not a token)
     soft: ['--red-50', '--red-100', '--red-100', '--red-700'],
     ghost: ['--red-700', '--red-50'], tertiary: ['--light-300', '--light-500', '--red-500'] },   // tertiary = .btn--tertiary.btn--danger (QRIS: Cancel payment)
-  // .btn--success: the success token (green-500), pressed green-600 (Ghais' rule 09 Nov)
-  success: { solid: ['--color-success', '--green-600', '--light-100'] },
+  // .btn--success: the success token (green-500), pressed green-700 (Ghais 13 Nov, was green-600)
+  success: { solid: ['--color-success', '--green-700', '--light-100'] },   // pressed Green 700 (Ghais 13 Nov)
   // ADS Swing Pass (components.css .btn--glass on the pass band, .btn--pass gradient): solid only, sizes l and s
   glass: { solid: ['GRAD:--glass-fill', 'GRAD:--glass-fill', '--light-100', '--glass-line'], sizes: ['l', 's'] },
   pass: { solid: ['GRAD:--gradient-swing-pass', 'GRAD:--gradient-swing-pass', '--light-100'], sizes: ['l', 's'] },
