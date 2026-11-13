@@ -1158,12 +1158,15 @@ function ensureProp(set, name, type, def, legacy) {
 /* ----- Swing names (Ghais 11 Nov) -----
    Every component set is named swing_<part> in snake case: Button -> swing_btn, TextField -> swing_text_field,
    Home/ProductCard -> Home/swing_product_card (the screen folder stays, it groups the Assets panel).
-   A set with a kind property (tone, type, kind or control, more than one value) is split into one set per kind:
-   Button -> swing_btn_primary, swing_btn_neutral, ... The variant names inside keep the kind (tone=primary),
+   A set with a kind property (type, kind or control, more than one value) is split into one set per kind:
+   TextField -> swing_text_field_text, swing_text_field_password, ... The variant names inside keep the kind,
    so the code below that finds a variant by its full name keeps working, and the kind still reads in Dev Mode.
-   Each set carries plugin data { logical, prop, value }: the code keeps asking for "Button" and gets every kind. */
+   Each set carries plugin data { logical, prop, value }: the code keeps asking for "TextField" and gets every kind.
+   tone is NOT split (Ghais 13 Nov): Button, Tag, Badge, ... are one set each (swing_btn) with tone as a property,
+   so a designer switches primary / neutral / danger on the instance. A file built while tone was split is merged
+   back by buildSet: the first tone's set is kept and renamed, the other tones' variants move into it. */
 var SWING_BASE = { Button: 'btn', IconButton: 'icon_btn', SwingLoader: 'loader', SwingPass: 'pass' };
-var SPLIT_PROPS = ['tone', 'type', 'kind', 'control'];
+var SPLIT_PROPS = ['type', 'kind', 'control'];
 function snakeName(s) { return String(s).replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase(); }
 function swingBase(logical) {
   var parts = String(logical).split('/'), b = parts.pop();
@@ -1217,7 +1220,16 @@ async function buildSet(page, setName, variants, buildVariant, wire, layout, R, 
   var olds = [setName, swingBase(setName), legacySetName].filter(Boolean);
   var old = page.findOne(function (n) { return n.type === 'COMPONENT_SET' && olds.indexOf(n.name) >= 0 && !setTag(n).prop; });
   if (!prop) {
-    var r1 = await buildOneSet(page, swingBase(setName), variants, buildVariant, R, old, old, setName);
+    // Built split before (swing_btn_primary, swing_btn_neutral, ...): keep the first kind's set (its property keys
+    // stay, so overrides on that kind's instances stay), move every other kind's variants into it, drop the empty sets.
+    // The component nodes move, so every placed instance stays linked.
+    var base = String(setName).split('/').pop();
+    var splits = old ? [] : page.findAllWithCriteria({ types: ['COMPONENT_SET'] })
+      .filter(function (n) { var t = setTag(n); return t.logical === base && !!t.prop; });
+    var keep = old || splits[0] || null;
+    var from = splits.length > 1 ? splitView(setName, splits) : keep;
+    var r1 = await buildOneSet(page, swingBase(setName), variants, buildVariant, R, keep, from, setName);
+    splits.forEach(function (s) { try { if (s !== r1.set && !s.removed && !s.children.length) s.remove(); } catch (e) { /* Figma removed it */ } });
     tagSet(r1.set, setName, null, null);
     wireIn(r1.set, wire, layout, r1.comps);
     return r1.set;
@@ -1257,7 +1269,9 @@ async function buildOneSet(page, setName, variants, buildVariant, R, set, from, 
     var comp = from && (from.findChild(function (c) { return c.name === vname; }) || (oldName && from.findChild(function (c) { return c.name === oldName; })));
     if (comp) {
       comp.name = vname; comp.children.slice().forEach(function (c) { c.remove(); });
-      if (from !== set) page.appendChild(comp);   // moving out of the pre-split set: the component node stays, so instances stay linked
+      // From another set (a split or a merge): move the node straight into this set when it exists, so the set it
+      // came from or this one never goes empty mid-build (Figma deletes an empty set). The node stays, so instances stay linked.
+      if (from !== set && comp.parent !== set) { if (set) set.appendChild(comp); else page.appendChild(comp); }
     } else { comp = figma.createComponent(); page.appendChild(comp); comp.name = vname; }
     await buildVariant(comp, variants[i]);
     comps.push(comp);
@@ -1334,7 +1348,17 @@ async function makeText(R, styleCss, colorCss, chars, parent) {
 }
 
 async function docArtboard(R, page, set, comps, variants, spec) {
-  if (!set.__split) return docArtboardOne(R, page, set, comps, variants, Object.assign({}, spec, { title: set.name || spec.title, oldTitle: spec.title }));
+  if (!set.__split) {
+    // Merged back from a split (tone, 13 Nov): the kept set still sits in its kind's artboard (swing_btn_primary).
+    // Reuse that frame for the one set, then drop the other kinds' artboards once they hold no set.
+    var home = set.parent && set.parent.type === 'FRAME' && set.parent.parent === page && set.parent.name !== set.name ? set.parent : null;
+    if (home && !page.findChild(function (n) { return n.type === 'FRAME' && n.name === set.name; })) home.name = set.name;
+    var one = await docArtboardOne(R, page, set, comps, variants, Object.assign({}, spec, { title: set.name || spec.title, oldTitle: spec.title }));
+    page.findChildren(function (n) { return n.type === 'FRAME' && n.name.indexOf(set.name + '_') === 0; }).forEach(function (f) {
+      if (!f.findOne(function (n) { return n.type === 'COMPONENT_SET'; })) f.remove();
+    });
+    return one;
+  }
   var res = null;
   for (var si = 0; si < set.sets.length; si++) {
     var s = set.sets[si], cs = [], vs = [];

@@ -62,11 +62,13 @@ The owner makes access keys on the sync page under **Access keys** (one per pers
 **Components** builds component sets on a **Components** page, bound to the imported tokens. Rebuilding matches variants by name and updates them in place, so instances stay linked.
 
 ### Swing names
-Every component set is named `swing_<part>` in snake case: `swing_btn`, `swing_text_field`, `Home/swing_product_card` (the screen folder stays, it groups the Assets panel). A set with a kind property (`tone`, `type`, `kind` or `control`) is split into one set per kind, named after it: `swing_btn_primary`, `swing_btn_neutral`, `swing_text_field_password`, `swing_app_bar_home_search`. Each kind has its own artboard. The variants inside keep the kind in their name (`tone=primary`), so Dev Mode still says which kind it is; switch kind with instance swap.
+Every component set is named `swing_<part>` in snake case: `swing_btn`, `swing_text_field`, `Home/swing_product_card` (the screen folder stays, it groups the Assets panel). `tone` stays a property: `swing_btn`, `swing_tag`, `swing_badge` are one set each, so you switch primary, neutral or danger right on the instance. A set with another kind property (`type`, `kind` or `control`) is split into one set per kind, named after it: `swing_text_field_password`, `swing_app_bar_home_search`. Each kind has its own artboard. The variants inside keep the kind in their name (`type=password`), so Dev Mode still says which kind it is; switch kind with instance swap.
+
+A file built while `tone` was split (`swing_btn_primary`, `swing_btn_neutral`, ...) is merged back on Update: the first tone's set is kept and renamed `swing_btn`, the other tones' variants move into it and their empty sets and artboards are removed. Placed instances stay linked; text and icon overrides on instances of the other tones may need to be set again.
 
 Updating a file built before the swing names renames and splits the sets in place: every variant stays the same node, so placed instances stay linked. After that, publish the library and run **Export library keys** again in the DS file, or a UI file still asks for the old names.
 
-Instance names in screens follow the set: `swing_btn_primary · size=m, appearance=solid, state=default`.
+Instance names in screens follow the set: `swing_btn · size=m, tone=primary, appearance=solid, state=default`.
 
 The tables below use the part names the code uses (`Button`); in Figma that part is the `swing_btn_*` sets.
 
