@@ -1273,6 +1273,10 @@ async function buildOneSet(page, setName, variants, buildVariant, R, set, from, 
   } else {
     comps.forEach(function (c) { if (c.parent !== set) set.appendChild(c); });
   }
+  // Layer order = the order of the values in the instance panel's dropdowns (Figma lists a property's
+  // values in the order its variants come in the set). An update keeps the old order and appends new
+  // variants at the end (l, m, s, xl, xs), so put the children back in the order the variants are listed.
+  comps.forEach(function (c, i) { if (set.children[i] !== c) set.insertChild(i, c); });
   if (R) set.fills = paintFor(R, '--color-bg-subtle');
   return { set: set, comps: comps };
 }
@@ -1561,13 +1565,17 @@ var BTN_TONES = {
   glow: { solid: ['GRAD:--glass-fill', 'GRAD:--glass-fill', '--light-100', '--glass-line'], sizes: ['glow'], glow: 'white', noIcon: true },
   glowPurple: { solid: ['GRAD:--glass-fill', 'GRAD:--glass-fill', '--dark-500'], sizes: ['glow'], glow: 'purple', noIcon: true }
 };
-// Key order = variant order in the set (l first stays the default instance); BTN_SIZE_ORDER = artboard columns.
+// BTN_SIZE_ORDER = variant order in the set (the size dropdown) and the artboard columns. The default instance
+// is the top-left variant on the artboard (xl), not the first key here.
+// py = top/bottom padding from the spacing tokens (multiples of 4). The height hugs padding + label line height
+// with h as min height (the web's height): xl 16 + 20 + 16 = 52 -> 56, s 8 + 14 + 8 = 30 -> 32. Ghais 13 Nov.
+// h is also minWidth, the artboard labels and the hug check in buildVariant.
 var BTN_SIZES = {
-  l: { legacy: 'Large', h: 48, px: ['--space-24', 24], ghostPx: ['--space-12', 12], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 20, cls: '' },
-  m: { legacy: 'Medium', h: 40, px: ['--space-16', 16], ghostPx: ['--space-8', 8], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 20, cls: 'btn--m' },
-  s: { legacy: 'Small', h: 32, px: ['--space-12', 12], ghostPx: ['--space-8', 8], gap: ['--gap-tight', 4], type: '--type-cta-s', icon: 16, cls: 'btn--s' },
-  xl: { legacy: 'Extra large', h: 56, px: ['--space-32', 32], ghostPx: ['--space-16', 16], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 24, cls: 'btn--xl' },
-  xs: { legacy: 'Extra small', h: 24, px: ['--space-8', 8], ghostPx: ['--space-8', 8], gap: ['--gap-tight', 4], type: '--type-cta-s', icon: 16, cls: 'btn--xs' },
+  l: { legacy: 'Large', h: 48, px: ['--space-24', 24], ghostPx: ['--space-12', 12], py: ['--space-12', 12], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 20, cls: '' },
+  m: { legacy: 'Medium', h: 40, px: ['--space-16', 16], ghostPx: ['--space-8', 8], py: ['--space-8', 8], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 20, cls: 'btn--m' },
+  s: { legacy: 'Small', h: 32, px: ['--space-12', 12], ghostPx: ['--space-8', 8], py: ['--space-8', 8], gap: ['--gap-tight', 4], type: '--type-cta-s', icon: 16, cls: 'btn--s' },
+  xl: { legacy: 'Extra large', h: 56, px: ['--space-32', 32], ghostPx: ['--space-16', 16], py: ['--space-16', 16], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 24, cls: 'btn--xl' },
+  xs: { legacy: 'Extra small', h: 24, px: ['--space-8', 8], ghostPx: ['--space-8', 8], py: ['--space-4', 4], gap: ['--gap-tight', 4], type: '--type-cta-s', icon: 16, cls: 'btn--xs' },
   // .btn--glow: padding 12 16 from the spacing tokens, height hugs (12 + 20 + 12 = 44), radius 12, CTA M 14/20. Glow tones only.
   glow: { legacy: 'Glow', h: 44, px: ['--space-16', 16], ghostPx: ['--space-16', 16], py: ['--space-12', 12], gap: ['--space-8', 8], type: '--type-cta-m', icon: 16, cls: 'btn--glow',
     radius: ['--radius-12', 12], tones: ['glow', 'glowPurple'] }
@@ -1598,7 +1606,7 @@ function buttonVariants(states, isIcon) {
     if (isIcon && BTN_TONES[tone].noIcon) return;
     BTN_APPEAR.forEach(function (appear) {
       if (!BTN_TONES[tone][appear]) return;
-      wireKeys(BTN_SIZES).forEach(function (size) {
+      BTN_SIZE_ORDER.forEach(function (size) {   // xl > l > m > s > xs > glow: the size dropdown reads big to small
         if (BTN_TONES[tone].sizes && BTN_TONES[tone].sizes.indexOf(size) < 0) return;
         if (BTN_SIZES[size].tones && BTN_SIZES[size].tones.indexOf(tone) < 0) return;
         states.forEach(function (state) {
@@ -1753,11 +1761,12 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
     comp.counterAxisAlignItems = 'CENTER';
     comp.resize(isIcon ? S.h : Math.max(comp.width, S.h), S.h);
     comp.layoutSizingHorizontal = isIcon ? 'FIXED' : 'HUG';
-    // A size with token padding on top/bottom (glow) hugs its height; the others keep their fixed height.
+    // Button hugs its height: top/bottom padding from the spacing tokens (S.py). IconButton stays a fixed square.
     // Set after resize(), which puts both sizing modes back to FIXED.
     var hugH = !isIcon && !!S.py;
     comp.layoutSizingVertical = hugH ? 'HUG' : 'FIXED';
     comp.minWidth = S.h;
+    if (hugH) comp.minHeight = S.h; else comp.minHeight = null;   // hug, but never shorter than the web's height
     comp.paddingTop = 0; comp.paddingBottom = 0;
     if (hugH) { bindNumber(R, comp, 'paddingTop', S.py[0], S.py[1]); bindNumber(R, comp, 'paddingBottom', S.py[0], S.py[1]); }
     if (isIcon) { comp.paddingLeft = 0; comp.paddingRight = 0; comp.itemSpacing = 0; }   // .btn--icon: padding 0, width = height
@@ -1801,6 +1810,10 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
     p.label = label;
     p.trail = iconSlot('iconEnd', icons.trail, false);
     var gl = BTN_TONES[v.tone].glow;
+    // Hug check: with the min height the button is S.h unless its content is taller. If the CTA type tokens or
+    // padding grow past it, the button still hugs, but say so instead of silently drifting from the web.
+    if (Math.round(comp.height) !== S.h)
+      notes.push('Button ' + comp.name + ': hugs to ' + Math.round(comp.height) + 'px, taller than its min height ' + S.h + ' (padding ' + S.py[1] + ' top/bottom + the ' + S.type + ' line height).');
     if (gl && v.state !== 'disabled') p.glow = glowRing(R, comp, gl, S.radius);   // disabled: no light, like the web
     parts[comp.name] = p;
   }
@@ -1825,7 +1838,7 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
     });
     set.description = '<button class="swing_btn swing_btn_{tone} swing_btn_{appearance} swing_btn_{size}">{label}</button>. ' +
       'state: pressed = :active / .is-pressed · disabled = disabled · loading = aria-busy="true" + .swing_loader_24 before the label. ' +
-      'size xl 56 · l 48 · m 40 · s 32 · xs 24 (s and xs get a 48 tap area in code). success is solid only, tertiary is primary/neutral only. Full width (.swing_btn_block): set the instance width to Fill. ' +
+      'size xl 56 · l 48 · m 40 · s 32 · xs 24, height hugs with that as min height: padding top/bottom xl 16 · l 12 · m 8 · s 8 · xs 4 from the space tokens (s and xs get a 48 tap area in code). success is solid only, tertiary is primary/neutral only. Full width (.swing_btn_block): set the instance width to Fill. ' +
       'size glow (.swing_btn_glow, padding 12 16 from space-12 / space-16, height hugs to 44, radius 12, CTA M) has tones glow (white light on the glass line, white label) and glowPurple (.swing_btn_glow_purple: purple sweep, no glass line, Dark 500 label, for light backgrounds). ' +
       'Its "glow" layer is a 1.5px ring mask with "sheen" above it; animate "sheen" in Figma Motion: rotation 0 at 0 ms, -360 at 2000 ms, ease in-out, Loop. Disabled has no glow.';
   }
