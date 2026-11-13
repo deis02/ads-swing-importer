@@ -39,6 +39,8 @@ Token yang nggak punya tempat langsung di Figma disesuaiin, nggak dilewatin:
 Tambahin di `networkAccess.allowedDomains` di `manifest.json`, terus import ulang manifest-nya.
 
 ## Kirim perubahan ke web (Figma → tokens.css)
+> **Lagi disembunyiin.** Bagian ini dimatiin di plugin. Kalau mau dinyalain lagi, hapus `hidden` dari `<div class="sec" id="syncSec" hidden>` di `ui.html`, terus import ulang manifest-nya. Server-nya tetap jalan.
+
 Kalau ada yang ngubah variable di file DS (ADS TESTING), perubahannya bisa langsung ditulis ke `tokens.css`. Nggak perlu approval. Tiap update di-backup, dan bisa di-Undo.
 
 1. Di tab **Tokens**, bagian **Send to web**, isi **Access key** (`sds_...`). Key ini disimpan di Figma lo sendiri.
@@ -59,29 +61,40 @@ Section **Icons** ngebaca `icons/index.json` yang satu folder sama Source URL. T
 ## Components
 Section **Components** bikin component set di page **Components**, langsung nyambung ke token yang udah di-import. Kalau di-build ulang, variant dicari lewat nama terus diupdate di tempat, jadi instance yang udah dipakai tetap nyambung.
 
+### Nama swing
+Semua component set dinamain `swing_<part>` pakai snake case: `swing_btn`, `swing_text_field`, `Home/swing_product_card` (folder layarnya tetap, biar panel Assets kekelompok). `tone` tetap jadi property: `swing_btn`, `swing_tag`, `swing_badge` masing-masing satu set, jadi primary, neutral, atau danger tinggal diganti langsung di instance. Set yang punya property jenis lain (`type`, `kind`, atau `control`) dipecah jadi satu set per jenis, dan namanya ikut jenisnya: `swing_text_field_password`, `swing_app_bar_home_search`. Tiap jenis punya artboard sendiri. Nama variant di dalamnya tetap nyebut jenisnya (`type=password`), jadi di Dev Mode jenisnya tetap kebaca. Kalau mau ganti jenis, pakai instance swap.
+
+File yang di-build waktu `tone` masih dipecah (`swing_btn_primary`, `swing_btn_neutral`, ...) bakal digabung lagi waktu di-Update: set tone pertama dipertahanin dan di-rename jadi `swing_btn`, variant tone lain dipindah ke situ, terus set dan artboard yang udah kosong dihapus. Instance yang udah ditaruh tetap nyambung; override teks dan ikon di instance tone lain mungkin perlu diisi ulang.
+
+File yang di-build sebelum ada nama swing bakal di-rename dan dipecah di tempat waktu di-Update. Tiap variant tetap node yang sama, jadi instance yang udah ditaruh tetap nyambung. Abis itu, publish library-nya dan jalanin **Export library keys** lagi di file DS. Kalau nggak, file UI masih nyari nama lama.
+
+Nama instance di layar ngikutin set-nya: `swing_btn · size=m, tone=primary, appearance=solid, state=default`.
+
+Tabel di bawah pakai nama part yang dipakai kode (`Button`). Di Figma, part itu adalah set `swing_btn_*`.
+
 Nama di Figma = nama di kode, jadi developer bisa baca instance terus langsung nulis markup-nya:
 
 | Figma | Kode |
 |---|---|
-| `Button` · `size` xl / l / m / s / xs | `.btn--xl` / `.btn` (tanpa class) / `.btn--m` / `.btn--s` / `.btn--xs` |
-| `tone` primary / neutral / danger / success | tanpa class / `.btn--neutral` / `.btn--danger` / `.btn--success` |
-| `appearance` solid / soft / ghost / tertiary | tanpa class / `.btn--soft` / `.btn--ghost` / `.btn--tertiary` |
+| `Button` · `size` xl / l / m / s / xs | `.swing_btn_xl` / `.swing_btn` (tanpa class) / `.swing_btn_m` / `.swing_btn_s` / `.swing_btn_xs` |
+| `tone` primary / neutral / danger / success | tanpa class / `.swing_btn_neutral` / `.swing_btn_danger` / `.swing_btn_success` |
+| `appearance` solid / soft / ghost / tertiary | tanpa class / `.swing_btn_soft` / `.swing_btn_ghost` / `.swing_btn_tertiary` |
 | `state` pressed / disabled / loading | `:active` atau `.is-pressed` / `disabled` / `aria-busy="true"` + loader |
-| `label`, `showIconStart` + `iconStart`, `showIconEnd` + `iconEnd` | teks tombol, `<i class="icon">` sebelum / sesudahnya |
-| `IconButton` · `icon` | `.btn.btn--icon` + `aria-label` |
-| `SlideConfirm` · `tone` primary / danger · `state` dragging / loading / disabled · `label`, `busyLabel` | `.slide-confirm`, `--danger`, `.is-dragging`, `.is-done` + `aria-busy`, `aria-disabled`, `data-busy-label` |
-| `SwingLoader` · `size` 16 / 24 / 48 / 96 | `.swing-loader`, `--24`, `--96` |
+| `label`, `showIconStart` + `iconStart`, `showIconEnd` + `iconEnd` | teks tombol, `<i class="swing_icon">` sebelum / sesudahnya |
+| `IconButton` · `icon` | `.swing_btn.btn--icon` + `aria-label` |
+| `SlideConfirm` · `tone` primary / danger · `state` dragging / loading / disabled · `label`, `busyLabel` | `.swing_slide_confirm`, `--danger`, `.is-dragging`, `.is-done` + `aria-busy`, `aria-disabled`, `data-busy-label` |
+| `SwingLoader` · `size` 16 / 24 / 48 / 96 | `.swing_loader`, `--24`, `--96` |
 
-- **Button** (240): semua di atas, kombinasinya ngikutin DS (success cuma solid, tertiary cuma primary/neutral). Buat full width (`.btn--block`), set width instance ke Fill.
+- **Button** (240): semua di atas, kombinasinya ngikutin DS (success cuma solid, tertiary cuma primary/neutral). Buat full width (`.swing_btn_block`), set width instance ke Fill.
 - **IconButton** (180): kotak, icon 24 di xl, 20 di l/m, 16 di s/xs, state default / pressed / disabled.
 - **SlideConfirm** (8): lebar 342 (set instance ke Fill), dragging ditampilin di 50%.
 - **SwingLoader** (4, page Loading): mark statis; di web dianimasikan.
 
 Hasil build dengan nama lama di-rename di tempat: component-nya sama, instance-nya tetap nyambung.
 
-- **Badge** (48, page Badge): `tone` neutral / primary / success / warning / danger / info / teal / pink · `appearance` soft / solid / dot · `size` m / s · `label`, `showIcon` + `icon`. Kode: `.badge--{tone} .badge--{appearance} .badge--s`.
+- **Badge** (48, page Badge): `tone` neutral / primary / success / warning / danger / info / teal / pink · `appearance` soft / solid / dot · `size` m / s · `label`, `showIcon` + `icon`. Kode: `.swing_badge_{tone} .swing_badge_{appearance} .swing_badge_s`.
 - **Counter** (12, `placement` inline / corner) · `tone` danger / primary / neutral · `size` 20 / 16 · `count`. **Indicator** (2): titik 8px.
-- **Tag** (64, page Tag): `tone` neutral / primary / teal / pink / orange / green / red / on-media · `size` m / s · `state` default / pressed / selected / disabled · `label`, `showIconStart` + `iconStart`, `showCounter`, `showChevron`, `showRemove`. Kode: `.tag--{tone} .tag--s`, selected = `aria-pressed="true"`. Beda yang diketahui: di CSS padding samping dikurangin 4 kalau ada icon; Figma nggak bisa, jadi tag yang pakai icon 4px lebih lebar per sisi.
+- **Tag** (64, page Tag): `tone` neutral / primary / teal / pink / orange / green / red / on-media · `size` m / s · `state` default / pressed / selected / disabled · `label`, `showIconStart` + `iconStart`, `showCounter`, `showChevron`, `showRemove`. Kode: `.swing_tag_{tone} .swing_tag_s`, selected = `aria-pressed="true"`. Beda yang diketahui: di CSS padding samping dikurangin 4 kalau ada icon; Figma nggak bisa, jadi tag yang pakai icon 4px lebih lebar per sisi.
 
 Semua page (satu page per grup component, tiap set di artboard sendiri lengkap dengan markup kodenya). Set yang di CSS-nya tersusun dari component lain pakai instance asli (Card isinya Button sama Badge, Sheet isinya Option sama Select), jadi ubah component dasarnya, yang lain ikut ke-update.
 
@@ -115,6 +128,8 @@ Semua page (satu page per grup component, tiap set di artboard sendiri lengkap d
 | AppBar | Brand 2, AppBar 16 (termasuk type=homeSearch, dan type=ads: panah back ADS + tombol negara) |
 | Card | Media 16, Card 4, Stat 2 |
 | ActionCard | ActionCard 24 |
+| FeaturedPromo | FeaturedPromo 2 (state default · claimed) |
+| CashbackTable | CashbackTable 2 (current regular · pass) |
 | CourseCard | CourseCard 4, CardRail 1, Carousel 1 |
 | Sheet | SheetHead 4, ShareApp 1, Sheet 5 |
 | Search | SearchRow 4, SearchBar 2, SearchPanel 2 |
@@ -129,7 +144,7 @@ Button punya `size=glow` (padding 12 16 dari token, tinggi HUG = 44, radius 12, 
 - `glow`: glass + garis glass-line, label putih. Buat latar ungu, gelap, atau foto.
 - `glowPurple`: glass tanpa garis, label Dark 500. Buat latar terang.
 
-Tiap variant punya layer `glow`: mask cincin 1,5px plus `sheen` di atasnya. Untuk tone `glow`, `sheen` itu kotak 320 dengan gradient angular putih. Untuk `glowPurple`, ukurannya 276 x 161, isinya gradient linear Purple 500 dari 0% di 25% sampai 100%. Disabled nggak punya glow. Di web, class-nya `.btn--glow` / `.btn--glow.btn--glow-purple`.
+Tiap variant punya layer `glow`: mask cincin 1,5px plus `sheen` di atasnya. Untuk tone `glow`, `sheen` itu kotak 320 dengan gradient angular putih. Untuk `glowPurple`, ukurannya 276 x 161, isinya gradient linear Purple 500 dari 0% di 25% sampai 100%. Disabled nggak punya glow. Di web, class-nya `.swing_btn_glow` / `.swing_btn_glow.btn--glow-purple`.
 
 Plugin nggak bisa ngisi keyframe. Jadi abis build, buka Motion, pilih `sheen`, terus set Rotation 0 di 0 ms dan -360 di 2000 ms, ease in-out, Loop. Kalau Button di-Update, keyframe-nya perlu dipasang ulang.
 

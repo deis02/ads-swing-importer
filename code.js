@@ -544,7 +544,10 @@ function effectName(css) {
 
 // --gradient-purple -> Gradient/Brand/purple, --glass-fill -> Gradient/Surface/glass-fill,
 // --deal-scrim -> Gradient/Overlay/deal-scrim
+// Paint style names the file already uses (Ghais 11 Nov: the Swing Pass gradient is "Gradient/Brand/purple-sp")
+var PAINT_NAMES = { '--gradient-swing-pass': 'Gradient/Brand/purple-sp' };
 function paintName(css) {
+  if (PAINT_NAMES[css]) return PAINT_NAMES[css];
   var s = css.replace(/^--/, '').replace(/^gradient-|-gradient$/g, '');
   var g = /scrim|overlay|fade/.test(s) ? 'Overlay' : /glass|card|surface|bg|background/.test(s) ? 'Surface' : 'Brand';
   return 'Gradient/' + g + '/' + s;
@@ -719,7 +722,7 @@ function analyze(css) {
     var m = v.type === 'COLOR' && v.css.match(/^--([a-z]+)-\d+$/);
     if (m && m[1] !== 'color') steps[m[1]] = (steps[m[1]] || 0) + 1;
   });
-  Object.keys(steps).forEach(function (k) { if (steps[k] >= 3) ramps[k] = true; });
+  wireKeys(steps).forEach(function (k) { if (steps[k] >= 3) ramps[k] = true; });
   // A ramp's role comes from the semantic tokens that point at it:
   // --color-primary -> purple = Primary, --color-success -> green = Status, --color-text -> dark = Neutral.
   // Ramps nobody points at are Secondary.
@@ -876,6 +879,8 @@ async function importPlan(plan, opts) {
     plan.paints.forEach(function (t) {
       try {
         var st = pdesc[t.css] || pmap[t.name];
+        // a style the file made itself under the agreed name (Gradient/Brand/purple-sp is the ADS fill): use it, never overwrite it
+        if (PAINT_NAMES[t.css] && pmap[t.name] && pmap[t.name] !== pdesc[t.css]) return;
         if (st) { res.updated++; if (st.name !== t.name) { st.name = t.name; res.renamed++; } }
         else { st = figma.createPaintStyle(); st.name = t.name; res.created++; }
         st.paints = t.paints;
@@ -904,7 +909,7 @@ async function loadRegistry() {
     if (val && val.type === 'VARIABLE_ALIAS') return resolved(byId[val.id], depth + 1);
     return val && typeof val === 'object' && 'r' in val ? val : null;
   }
-  Object.keys(R.vars).forEach(function (k) { if (R.vars[k].resolvedType === 'COLOR') R.color[k] = resolved(R.vars[k], 0); });
+  wireKeys(R.vars).forEach(function (k) { if (R.vars[k].resolvedType === 'COLOR') R.color[k] = resolved(R.vars[k], 0); });
   (await figma.getLocalTextStylesAsync()).forEach(function (s) { if (/^--/.test(s.description)) R.text[s.description.split('\n')[0]] = s; });
   (await figma.getLocalEffectStylesAsync()).forEach(function (s) { if (/^--/.test(s.description)) R.effects[s.description.split('\n')[0]] = s; });
   R.v = function (css) { var v = R.vars[css]; if (!v) R.missing[css] = 1; return v || null; };
@@ -1042,7 +1047,17 @@ async function libComponent(name) {
   return LIB_CACHE['c:' + k];
 }
 async function libSet(setName, pageName) {
+  var names = (LIB.logical || {})[setName];
+  if (names && names.length) {
+    var got = [];
+    for (var i = 0; i < names.length; i++) got.push(await libSetOne(names[i], pageName, setName));
+    return names.length > 1 || (LIB.split || {})[setName] ? splitView(setName, got) : got[0];
+  }
+  return libSetOne(setName, pageName);
+}
+async function libSetOne(setName, pageName, logical) {
   var s = LIB.sets[setName];
+  if (logical) setName = setName + ' (' + logical + ')';   // swing_app_bar_home (AppBar): name the part the screen asked for too
   if (!s) throw new Error(setName + ' is not in the library keys. Build the ' + pageName + ' page in the DS file, publish the library, then run Export library keys there again.');
   if (!LIB_CACHE['s:' + s.key]) {
     figma.ui.postMessage({ type: 'build-progress', set: 'Library: ' + setName, done: 0, total: 1, phase: 'variants' });
@@ -1055,22 +1070,29 @@ async function libSet(setName, pageName) {
 async function exportLibraryKeys() {
   var R = await loadRegistry();
   if (!Object.keys(R.vars).length) throw new Error('This file has no tokens, so it is not the DS file. Run Export library keys in the file that has the DS pages.');
-  var out = { v: 1, file: figma.root.name, at: Date.now(), sets: {}, comps: {}, vars: {}, color: {}, text: {}, effects: {}, paints: {} };
+  var out = { v: 2, file: figma.root.name, at: Date.now(), sets: {}, logical: {}, split: {}, comps: {}, vars: {}, color: {}, text: {}, effects: {}, paints: {} };
   for (var i = 0; i < figma.root.children.length; i++) {
     var pg = figma.root.children[i];
     if (/^Screen \//.test(pg.name) || UI_PARTS[pg.name]) continue;   // screens and UI components are not base library parts
     await pg.loadAsync();
-    pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { if (!out.sets[s.name]) out.sets[s.name] = { key: s.key, page: pg.name }; });
+    pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) {
+      if (out.sets[s.name]) return;
+      out.sets[s.name] = { key: s.key, page: pg.name };
+      var t = setTag(s);   // swing names: the code asks for the logical part (Button) and gets every kind
+      if (t.logical) { (out.logical[t.logical] = out.logical[t.logical] || []).push(s.name); if (t.prop) out.split[t.logical] = t.prop; }
+    });
     pg.findAllWithCriteria({ types: ['COMPONENT'] }).forEach(function (c) {
       if (c.parent && c.parent.type === 'COMPONENT_SET') return;
       if (!out.comps[c.name]) out.comps[c.name] = c.key;
     });
   }
   // per-style typography variables ride inside the text styles, so a library file does not import them one by one
-  Object.keys(R.vars).forEach(function (k) { if (/:(size|line-height|letter-spacing)$/.test(k)) return; out.vars[k] = R.vars[k].key; if (R.color[k]) out.color[k] = R.color[k]; });
-  Object.keys(R.text).forEach(function (k) { out.text[k] = R.text[k].key; });
-  Object.keys(R.effects).forEach(function (k) { out.effects[k] = R.effects[k].key; });
-  (await figma.getLocalPaintStylesAsync()).forEach(function (s) { var k = (s.description || '').split('\n')[0]; if (/^--/.test(k)) out.paints[k] = s.key; });
+  wireKeys(R.vars).forEach(function (k) { if (/:(size|line-height|letter-spacing)$/.test(k)) return; out.vars[k] = R.vars[k].key; if (R.color[k]) out.color[k] = R.color[k]; });
+  wireKeys(R.text).forEach(function (k) { out.text[k] = R.text[k].key; });
+  wireKeys(R.effects).forEach(function (k) { out.effects[k] = R.effects[k].key; });
+  var lps = await figma.getLocalPaintStylesAsync(), pnames = {};
+  lps.forEach(function (s) { var k = (s.description || '').split('\n')[0]; if (/^--/.test(k)) out.paints[k] = s.key; pnames[s.name] = s.key; });
+  wireKeys(PAINT_NAMES).forEach(function (css) { if (pnames[PAINT_NAMES[css]]) out.paints[css] = pnames[PAINT_NAMES[css]]; });
   await figma.clientStorage.setAsync('libKeys', out);
   return { file: out.file, sets: Object.keys(out.sets).length, comps: Object.keys(out.comps).length, vars: Object.keys(out.vars).length,
     styles: Object.keys(out.text).length + Object.keys(out.effects).length + Object.keys(out.paints).length };
@@ -1133,25 +1155,124 @@ function ensureProp(set, name, type, def, legacy) {
   return set.addComponentProperty(name, type, def);
 }
 
+/* ----- Swing names (Ghais 11 Nov) -----
+   Every component set is named swing_<part> in snake case: Button -> swing_btn, TextField -> swing_text_field,
+   Home/ProductCard -> Home/swing_product_card (the screen folder stays, it groups the Assets panel).
+   A set with a kind property (type, kind or control, more than one value) is split into one set per kind:
+   TextField -> swing_text_field_text, swing_text_field_password, ... The variant names inside keep the kind,
+   so the code below that finds a variant by its full name keeps working, and the kind still reads in Dev Mode.
+   Each set carries plugin data { logical, prop, value }: the code keeps asking for "TextField" and gets every kind.
+   tone is NOT split (Ghais 13 Nov): Button, Tag, Badge, ... are one set each (swing_btn) with tone as a property,
+   so a designer switches primary / neutral / danger on the instance. A file built while tone was split is merged
+   back by buildSet: the first tone's set is kept and renamed, the other tones' variants move into it. */
+var SWING_BASE = { Button: 'btn', IconButton: 'icon_btn', SwingLoader: 'loader', SwingPass: 'pass' };
+var SPLIT_PROPS = ['type', 'kind', 'control'];
+function snakeName(s) { return String(s).replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase(); }
+function swingBase(logical) {
+  var parts = String(logical).split('/'), b = parts.pop();
+  if (/^swing_/.test(b)) return logical;
+  parts.push('swing_' + (SWING_BASE[b] || snakeName(b)));
+  return parts.join('/');
+}
+function variantValue(vname, prop) {
+  var kv = String(vname).split(',').map(function (s) { return s.trim().split('='); }).filter(function (p) { return p[0] === prop; })[0];
+  return kv ? kv[1] : null;
+}
+function splitPropOf(setName, variants) {
+  for (var i = 0; i < SPLIT_PROPS.length; i++) {
+    var seen = {}, n = 0;
+    variants.forEach(function (v) { var x = variantValue(v.name, SPLIT_PROPS[i]); if (x !== null && !seen[x]) { seen[x] = 1; n++; } });
+    if (n > 1 && variants.every(function (v) { return variantValue(v.name, SPLIT_PROPS[i]) !== null; })) return SPLIT_PROPS[i];
+  }
+  return null;
+}
+function setTag(s) { try { return JSON.parse(s.getPluginData('swing') || '{}'); } catch (e) { return {}; } }
+function tagSet(s, logical, prop, value) { s.setPluginData('swing', JSON.stringify({ logical: String(logical).split('/').pop(), prop: prop, value: value })); }
+// The sets of one logical part, as one object: children are every variant of every kind (full names).
+function splitView(logical, sets) {
+  return { __split: true, logical: logical, name: swingBase(logical), sets: sets, type: 'SPLIT_VIEW',
+    get children() { return [].concat.apply([], sets.map(function (s) { return s.children; })); },
+    get parent() { return sets[0] && sets[0].parent; },
+    get description() { return sets[0] ? sets[0].description : ''; },
+    set description(d) { sets.forEach(function (s) { s.description = d; }); },
+    findChild: function (f) { return this.children.filter(f)[0] || null; },
+    findOne: function (f) { for (var i = 0; i < sets.length; i++) { var r = sets[i].findOne(f); if (r) return r; } return null; },
+    findAll: function (f) { return [].concat.apply([], sets.map(function (s) { return s.findAll(f); })); } };
+}
+function firstSetOf(s) { return s && s.__split ? s.sets[0] : s; }
+// Is this variant one of the part's (any of its kinds, when the part is split)?
+function inPart(comp, set) { return !!comp && !!set && (set.__split ? set.sets.indexOf(comp.parent) >= 0 : comp.parent === set); }
+// Find the set(s) of a logical part on a page: tagged sets first, then an untagged set built before the rename.
+function findLogical(pg, logical, alt) {
+  var base = String(logical).split('/').pop();
+  var all = pg.findAllWithCriteria({ types: ['COMPONENT_SET'] });
+  var tagged = all.filter(function (n) { return setTag(n).logical === base; });
+  if (tagged.length) return tagged.length > 1 || setTag(tagged[0]).prop ? splitView(logical, tagged) : tagged[0];
+  var names = [logical, swingBase(logical), base, alt].filter(Boolean);
+  return all.filter(function (n) { return names.indexOf(n.name) >= 0; })[0] || null;
+}
+
 // Builds or updates a component set. Variants are matched by name, so instances
 // that already use them stay linked when the set is rebuilt.
+// A set with a kind property is built as one set per kind (see Swing names): the result is then a split view.
 async function buildSet(page, setName, variants, buildVariant, wire, layout, R, legacySetName) {
-  var set = page.findOne(function (n) { return n.type === 'COMPONENT_SET' && (n.name === setName || (legacySetName && n.name === legacySetName)); });
+  var prop = splitPropOf(setName, variants);
+  var olds = [setName, swingBase(setName), legacySetName].filter(Boolean);
+  var old = page.findOne(function (n) { return n.type === 'COMPONENT_SET' && olds.indexOf(n.name) >= 0 && !setTag(n).prop; });
+  if (!prop) {
+    // Built split before (swing_btn_primary, swing_btn_neutral, ...): keep the first kind's set (its property keys
+    // stay, so overrides on that kind's instances stay), move every other kind's variants into it, drop the empty sets.
+    // The component nodes move, so every placed instance stays linked.
+    var base = String(setName).split('/').pop();
+    var splits = old ? [] : page.findAllWithCriteria({ types: ['COMPONENT_SET'] })
+      .filter(function (n) { var t = setTag(n); return t.logical === base && !!t.prop; });
+    var keep = old || splits[0] || null;
+    var from = splits.length > 1 ? splitView(setName, splits) : keep;
+    var r1 = await buildOneSet(page, swingBase(setName), variants, buildVariant, R, keep, from, setName);
+    splits.forEach(function (s) { try { if (s !== r1.set && !s.removed && !s.children.length) s.remove(); } catch (e) { /* Figma removed it */ } });
+    tagSet(r1.set, setName, null, null);
+    wireIn(r1.set, wire, layout, r1.comps);
+    return r1.set;
+  }
+  var order = [], by = {};
+  variants.forEach(function (v) { var x = variantValue(v.name, prop); if (!by[x]) { by[x] = []; order.push(x); } by[x].push(v); });
+  var sets = [];
+  for (var g = 0; g < order.length; g++) {
+    var name = swingBase(setName) + '_' + snakeName(order[g]);
+    var mine = page.findOne(function (n) { return n.type === 'COMPONENT_SET' && (n.name === name || (setTag(n).logical === String(setName).split('/').pop() && setTag(n).value === order[g])); });
+    // the first kind keeps the set from before the split (renamed): its property keys stay, so overrides on placed instances of that kind stay
+    var reuse = !mine && g === 0 && old ? old : null;
+    var r = await buildOneSet(page, name, by[order[g]], buildVariant, R, mine || reuse, mine || old, name);
+    tagSet(r.set, setName, prop, order[g]);
+    wireIn(r.set, wire, layout, r.comps);   // wire only reaches the variants of this set (wireKeys)
+    sets.push(r.set);
+  }
+  // the set from before the split, when it was not reused: every variant moved out, so it is empty now (Figma may already have removed it)
+  try { if (old && sets.indexOf(old) < 0 && !old.removed && !old.children.length) old.remove(); } catch (e) { /* already gone */ }
+  return splitView(setName, sets);
+}
+// One set. `set` is this set when it exists already; `from` is where existing variants are looked up
+// (this set on an update, the set from before the split the first time a part is split).
+async function buildOneSet(page, setName, variants, buildVariant, R, set, from, label) {
   if (set) set.name = setName;
   var comps = [], lastPost = 0;
   function progress(done, phase) {
     var now = Date.now();
     if (phase !== 'variants' || done === variants.length || now - lastPost > 60) {
       lastPost = now;
-      figma.ui.postMessage({ type: 'build-progress', set: setName, done: done, total: variants.length, phase: phase });
+      figma.ui.postMessage({ type: 'build-progress', set: label || setName, done: done, total: variants.length, phase: phase });
     }
   }
   progress(0, 'variants');
   for (var i = 0; i < variants.length; i++) {
-    var vname = variants[i].name, old = variants[i].legacy;
-    var comp = set && (set.findChild(function (c) { return c.name === vname; }) || (old && set.findChild(function (c) { return c.name === old; })));
-    if (comp) { comp.name = vname; comp.children.slice().forEach(function (c) { c.remove(); }); }
-    else { comp = figma.createComponent(); page.appendChild(comp); comp.name = vname; }
+    var vname = variants[i].name, oldName = variants[i].legacy;
+    var comp = from && (from.findChild(function (c) { return c.name === vname; }) || (oldName && from.findChild(function (c) { return c.name === oldName; })));
+    if (comp) {
+      comp.name = vname; comp.children.slice().forEach(function (c) { c.remove(); });
+      // From another set (a split or a merge): move the node straight into this set when it exists, so the set it
+      // came from or this one never goes empty mid-build (Figma deletes an empty set). The node stays, so instances stay linked.
+      if (from !== set && comp.parent !== set) { if (set) set.appendChild(comp); else page.appendChild(comp); }
+    } else { comp = figma.createComponent(); page.appendChild(comp); comp.name = vname; }
     await buildVariant(comp, variants[i]);
     comps.push(comp);
     progress(i + 1, 'variants');
@@ -1166,11 +1287,31 @@ async function buildSet(page, setName, variants, buildVariant, wire, layout, R, 
   } else {
     comps.forEach(function (c) { if (c.parent !== set) set.appendChild(c); });
   }
+  // Layer order = the order of the values in the instance panel's dropdowns (Figma lists a property's
+  // values in the order its variants come in the set). An update keeps the old order and appends new
+  // variants at the end (l, m, s, xl, xs), so put the children back in the order the variants are listed.
+  comps.forEach(function (c, i) { if (set.children[i] !== c) set.insertChild(i, c); });
   if (R) set.fills = paintFor(R, '--color-bg-subtle');
-  wire(set, comps);
-  layout(set, comps);
-  return set;
+  return { set: set, comps: comps };
 }
+// While a set is being wired (WIRE_SET), wireKeys skips map entries whose node sits in ANOTHER component set:
+// a split part calls wire once per kind, and a property can only be bound inside its own set.
+// Outside wire (WIRE_SET null) it is exactly Object.keys.
+var WIRE_SET = null;
+function wireKeys(map) {
+  var ks = Object.keys(map);
+  if (!WIRE_SET) return ks;
+  function firstNode(e) {
+    if (!e || typeof e !== 'object') return null;
+    if (e.type && 'parent' in e) return e;
+    if (Array.isArray(e)) return e.length && e[0] && typeof e[0] === 'object' && e[0].type && 'parent' in e[0] ? e[0] : null;
+    for (var k in e) { var x = e[k]; if (x && typeof x === 'object' && x.type && 'parent' in x) return x; }
+    return null;
+  }
+  function elsewhere(n) { for (var p = n; p; p = p.parent) { if (p === WIRE_SET) return false; if (p.type === 'COMPONENT_SET') return true; } return false; }
+  return ks.filter(function (k) { var n = firstNode(map[k]); return !n || !elsewhere(n); });
+}
+function wireIn(set, wire, layout, comps) { WIRE_SET = set; try { wire(set, comps); layout(set, comps); } finally { WIRE_SET = null; } }
 
 // A failed build can leave variant components loose on whatever page was open.
 // Remove those (only loose ones matching this set's variant names, and only if nothing uses them).
@@ -1207,9 +1348,52 @@ async function makeText(R, styleCss, colorCss, chars, parent) {
 }
 
 async function docArtboard(R, page, set, comps, variants, spec) {
+  if (!set.__split) {
+    // Merged back from a split (tone, 13 Nov): the kept set still sits in its kind's artboard (swing_btn_primary).
+    // Reuse that frame for the one set, then drop the other kinds' artboards once they hold no set.
+    var home = set.parent && set.parent.type === 'FRAME' && set.parent.parent === page && set.parent.name !== set.name ? set.parent : null;
+    if (home && !page.findChild(function (n) { return n.type === 'FRAME' && n.name === set.name; })) home.name = set.name;
+    var one = await docArtboardOne(R, page, set, comps, variants, Object.assign({}, spec, { title: set.name || spec.title, oldTitle: spec.title }));
+    page.findChildren(function (n) { return n.type === 'FRAME' && n.name.indexOf(set.name + '_') === 0; }).forEach(function (f) {
+      if (!f.findOne(function (n) { return n.type === 'COMPONENT_SET'; })) f.remove();
+    });
+    return one;
+  }
+  var res = null;
+  for (var si = 0; si < set.sets.length; si++) {
+    var s = set.sets[si], cs = [], vs = [];
+    comps.forEach(function (c, i) { if (c.parent === s) { cs.push(c); vs.push(variants[i]); } });
+    if (!cs.length) continue;
+    // only the row and column groups this kind uses, renumbered
+    var P0 = vs.map(function (v) { return spec.place(v); });
+    var cgs = [], rgs = [], cols = {}, rows = {};
+    P0.forEach(function (p) {
+      if (cgs.indexOf(p.cg) < 0) cgs.push(p.cg);
+      if (rgs.indexOf(p.rg) < 0) rgs.push(p.rg);
+      (cols[p.cg] = cols[p.cg] || []).indexOf(p.c) < 0 && cols[p.cg].push(p.c);
+      (rows[p.rg] = rows[p.rg] || []).indexOf(p.r) < 0 && rows[p.rg].push(p.r);
+    });
+    var num = function (a, b) { return a - b; };
+    cgs.sort(num); rgs.sort(num); wireKeys(cols).forEach(function (k) { cols[k].sort(num); }); wireKeys(rows).forEach(function (k) { rows[k].sort(num); });
+    var sub = Object.assign({}, spec, {
+      title: s.name, legacyTitle: null,
+      colGroups: cgs.map(function (g) { return { label: spec.colGroups[g].label, cols: cols[g].map(function (c) { return spec.colGroups[g].cols[c]; }) }; }),
+      rowGroups: rgs.map(function (g) { return { label: spec.rowGroups[g].label, rows: rows[g].map(function (r) { return spec.rowGroups[g].rows[r]; }) }; }),
+      place: function (v) { var p = spec.place(v); return { cg: cgs.indexOf(p.cg), c: cols[p.cg].indexOf(p.c), rg: rgs.indexOf(p.rg), r: rows[p.rg].indexOf(p.r) }; }
+    });
+    if (spec.examples) sub.examples = spec.examples.map(function (E) { return Object.assign({}, E, { items: E.items.filter(function (it) { return s.children.some(function (c) { return c.name === it.variant; }); }) }); }).filter(function (E) { return E.items.length; });
+    res = await docArtboardOne(R, page, s, cs, vs, sub);
+  }
+  // the artboard from before the split held the one set: drop it once it holds no set
+  page.findChildren(function (n) { return n.type === 'FRAME' && (n.name === spec.title || n.name === spec.legacyTitle); }).forEach(function (f) {
+    if (!f.findOne(function (n) { return n.type === 'COMPONENT_SET'; })) f.remove();
+  });
+  return res;
+}
+async function docArtboardOne(R, page, set, comps, variants, spec) {
   var P = 64, LABEL_W = 176, CELL_GAP = 24, GROUP_GAP_X = 56, ROW_GAP = 16, GROUP_BAND = 40, GROUP_GAP_Y = 40, SET_PAD = 24;
 
-  var frame = page.findChild(function (n) { return n.type === 'FRAME' && (n.name === spec.title || (spec.legacyTitle && n.name === spec.legacyTitle)); });
+  var frame = page.findChild(function (n) { return n.type === 'FRAME' && (n.name === spec.title || (spec.legacyTitle && n.name === spec.legacyTitle) || (spec.oldTitle && n.name === spec.oldTitle)); });
   if (frame) frame.name = spec.title;
   if (!frame) {
     frame = figma.createFrame();
@@ -1390,10 +1574,11 @@ var BTN_TONES = {
     ghost: ['--purple-600', '--purple-50'], tertiary: ['--light-300', '--light-500', '--purple-500'] },
   neutral: { solid: ['--dark-500', '--dark-400', '--light-100'], soft: ['--light-300', '--light-500', '--light-500', '--dark-500'],
     ghost: ['--dark-500', '--light-300'], tertiary: ['--light-200', '--light-300', '--dark-300'] },
-  danger: { solid: ['--red-700', '--red-press', '--light-100'], soft: ['--red-50', '--red-100', '--red-100', '--red-700'],
+  danger: { solid: ['--red-500', '--red-700', '--light-100'],   // Red 500, pressed Red 700 (Ghais 13 Nov; --red-press is not a token)
+    soft: ['--red-50', '--red-100', '--red-100', '--red-700'],
     ghost: ['--red-700', '--red-50'], tertiary: ['--light-300', '--light-500', '--red-500'] },   // tertiary = .btn--tertiary.btn--danger (QRIS: Cancel payment)
-  // .btn--success: the success token (green-500), pressed green-600 (Ghais' rule 09 Nov)
-  success: { solid: ['--color-success', '--green-600', '--light-100'] },
+  // .btn--success: the success token (green-500), pressed green-700 (Ghais 13 Nov, was green-600)
+  success: { solid: ['--color-success', '--green-700', '--light-100'] },   // pressed Green 700 (Ghais 13 Nov)
   // ADS Swing Pass (components.css .btn--glass on the pass band, .btn--pass gradient): solid only, sizes l and s
   glass: { solid: ['GRAD:--glass-fill', 'GRAD:--glass-fill', '--light-100', '--glass-line'], sizes: ['l', 's'] },
   pass: { solid: ['GRAD:--gradient-swing-pass', 'GRAD:--gradient-swing-pass', '--light-100'], sizes: ['l', 's'] },
@@ -1405,13 +1590,17 @@ var BTN_TONES = {
   glow: { solid: ['GRAD:--glass-fill', 'GRAD:--glass-fill', '--light-100', '--glass-line'], sizes: ['glow'], glow: 'white', noIcon: true },
   glowPurple: { solid: ['GRAD:--glass-fill', 'GRAD:--glass-fill', '--dark-500'], sizes: ['glow'], glow: 'purple', noIcon: true }
 };
-// Key order = variant order in the set (l first stays the default instance); BTN_SIZE_ORDER = artboard columns.
+// BTN_SIZE_ORDER = variant order in the set (the size dropdown) and the artboard columns. The default instance
+// is the top-left variant on the artboard (xl), not the first key here.
+// py = top/bottom padding from the spacing tokens (multiples of 4). The height hugs padding + label line height
+// with h as min height (the web's height): xl 16 + 20 + 16 = 52 -> 56, s 8 + 14 + 8 = 30 -> 32. Ghais 13 Nov.
+// h is also minWidth, the artboard labels and the hug check in buildVariant.
 var BTN_SIZES = {
-  l: { legacy: 'Large', h: 48, px: ['--space-24', 24], ghostPx: ['--space-12', 12], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 20, cls: '' },
-  m: { legacy: 'Medium', h: 40, px: ['--space-16', 16], ghostPx: ['--space-8', 8], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 20, cls: 'btn--m' },
-  s: { legacy: 'Small', h: 32, px: ['--space-12', 12], ghostPx: ['--space-8', 8], gap: ['--gap-tight', 4], type: '--type-cta-s', icon: 16, cls: 'btn--s' },
-  xl: { legacy: 'Extra large', h: 56, px: ['--space-32', 32], ghostPx: ['--space-16', 16], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 24, cls: 'btn--xl' },
-  xs: { legacy: 'Extra small', h: 24, px: ['--space-8', 8], ghostPx: ['--space-8', 8], gap: ['--gap-tight', 4], type: '--type-cta-s', icon: 16, cls: 'btn--xs' },
+  l: { legacy: 'Large', h: 48, px: ['--space-24', 24], ghostPx: ['--space-12', 12], py: ['--space-12', 12], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 20, cls: '' },
+  m: { legacy: 'Medium', h: 40, px: ['--space-16', 16], ghostPx: ['--space-8', 8], py: ['--space-8', 8], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 20, cls: 'btn--m' },
+  s: { legacy: 'Small', h: 32, px: ['--space-12', 12], ghostPx: ['--space-8', 8], py: ['--space-8', 8], gap: ['--gap-tight', 4], type: '--type-cta-s', icon: 16, cls: 'btn--s' },
+  xl: { legacy: 'Extra large', h: 56, px: ['--space-32', 32], ghostPx: ['--space-16', 16], py: ['--space-16', 16], gap: ['--gap-related', 8], type: '--type-cta-l', icon: 24, cls: 'btn--xl' },
+  xs: { legacy: 'Extra small', h: 24, px: ['--space-8', 8], ghostPx: ['--space-8', 8], py: ['--space-4', 4], gap: ['--gap-tight', 4], type: '--type-cta-s', icon: 16, cls: 'btn--xs' },
   // .btn--glow: padding 12 16 from the spacing tokens, height hugs (12 + 20 + 12 = 44), radius 12, CTA M 14/20. Glow tones only.
   glow: { legacy: 'Glow', h: 44, px: ['--space-16', 16], ghostPx: ['--space-16', 16], py: ['--space-12', 12], gap: ['--space-8', 8], type: '--type-cta-m', icon: 16, cls: 'btn--glow',
     radius: ['--radius-12', 12], tones: ['glow', 'glowPurple'] }
@@ -1438,11 +1627,11 @@ function btnColors(tone, appear, state) {
 
 function buttonVariants(states, isIcon) {
   var out = [];
-  Object.keys(BTN_TONES).forEach(function (tone) {
+  wireKeys(BTN_TONES).forEach(function (tone) {
     if (isIcon && BTN_TONES[tone].noIcon) return;
     BTN_APPEAR.forEach(function (appear) {
       if (!BTN_TONES[tone][appear]) return;
-      Object.keys(BTN_SIZES).forEach(function (size) {
+      BTN_SIZE_ORDER.forEach(function (size) {   // xl > l > m > s > xs > glow: the size dropdown reads big to small
         if (BTN_TONES[tone].sizes && BTN_TONES[tone].sizes.indexOf(size) < 0) return;
         if (BTN_SIZES[size].tones && BTN_SIZES[size].tones.indexOf(tone) < 0) return;
         states.forEach(function (state) {
@@ -1529,16 +1718,16 @@ async function buildLoader(R, notes) {
     f.remove();
   }
   function wire(set) {
-    set.description = '<span class="swing-loader swing-loader--{size}">. Static mark: on the web the club line is drawn, the arc follows, then both lift off. ' +
-      'The colour is the stroke: primary by default, light-100 on purple, dark or Swing Pass (.swing-loader--inverse).';
+    set.description = '<span class="swing_loader swing_loader_{size}">. Static mark: on the web the club line is drawn, the arc follows, then both lift off. ' +
+      'The colour is the stroke: primary by default, light-100 on purple, dark or Swing Pass (.swing_loader_inverse).';
   }
   var set = await buildSet(page, 'SwingLoader', variants, buildVariant, wire, function () {}, R, 'Swing loader');
   var pv = pairUp(set, variants, function (c) { return /^size=\d+$/.test(c.name); });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'SwingLoader', legacyTitle: 'Swing loader',
     description: 'The Swing mark used for every wait. 24 inside buttons (16 in size s), 48 for in-page loading, 96 for full screens.',
-    code: ['<span class="swing-loader swing-loader--24" role="status" aria-label="Loading">',
-      'size 48 = default (no class) · 24 = .swing-loader--24 · 96 = .swing-loader--96 · 16 = inside .btn--s'],
+    code: ['<span class="swing_loader swing_loader_24" role="status" aria-label="Loading">',
+      'size 48 = default (no class) · 24 = .swing_loader_24 · 96 = .swing_loader_96 · 16 = inside .swing_btn_s'],
     colGroups: [{ label: 'size', cols: SL_SIZES.map(String) }],
     rowGroups: [{ label: 'color', rows: ['primary'] }],
     place: function (v) { return { cg: 0, c: SL_SIZES.indexOf(v.size), rg: 0, r: 0 }; }
@@ -1597,11 +1786,12 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
     comp.counterAxisAlignItems = 'CENTER';
     comp.resize(isIcon ? S.h : Math.max(comp.width, S.h), S.h);
     comp.layoutSizingHorizontal = isIcon ? 'FIXED' : 'HUG';
-    // A size with token padding on top/bottom (glow) hugs its height; the others keep their fixed height.
+    // Button hugs its height: top/bottom padding from the spacing tokens (S.py). IconButton stays a fixed square.
     // Set after resize(), which puts both sizing modes back to FIXED.
     var hugH = !isIcon && !!S.py;
     comp.layoutSizingVertical = hugH ? 'HUG' : 'FIXED';
     comp.minWidth = S.h;
+    if (hugH) comp.minHeight = S.h; else comp.minHeight = null;   // hug, but never shorter than the web's height
     comp.paddingTop = 0; comp.paddingBottom = 0;
     if (hugH) { bindNumber(R, comp, 'paddingTop', S.py[0], S.py[1]); bindNumber(R, comp, 'paddingBottom', S.py[0], S.py[1]); }
     if (isIcon) { comp.paddingLeft = 0; comp.paddingRight = 0; comp.itemSpacing = 0; }   // .btn--icon: padding 0, width = height
@@ -1645,6 +1835,10 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
     p.label = label;
     p.trail = iconSlot('iconEnd', icons.trail, false);
     var gl = BTN_TONES[v.tone].glow;
+    // Hug check: with the min height the button is S.h unless its content is taller. If the CTA type tokens or
+    // padding grow past it, the button still hugs, but say so instead of silently drifting from the web.
+    if (Math.round(comp.height) !== S.h)
+      notes.push('Button ' + comp.name + ': hugs to ' + Math.round(comp.height) + 'px, taller than its min height ' + S.h + ' (padding ' + S.py[1] + ' top/bottom + the ' + S.type + ' line height).');
     if (gl && v.state !== 'disabled') p.glow = glowRing(R, comp, gl, S.radius);   // disabled: no light, like the web
     parts[comp.name] = p;
   }
@@ -1652,8 +1846,8 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
   function wire(set) {
     if (isIcon) {
       var pIcon = ensureProp(set, 'icon', 'INSTANCE_SWAP', icons.share.id, 'Icon');
-      Object.keys(parts).forEach(function (k) { parts[k].icon.componentPropertyReferences = { mainComponent: pIcon }; });
-      set.description = '<button class="btn btn--icon btn--{tone} btn--{appearance} btn--{size}" aria-label="…">. Square, icon 24 in xl, 20 in l/m, 16 in s/xs. aria-label is required.';
+      wireKeys(parts).forEach(function (k) { parts[k].icon.componentPropertyReferences = { mainComponent: pIcon }; });
+      set.description = '<button class="swing_btn swing_btn_icon swing_btn_{tone} swing_btn_{appearance} swing_btn_{size}" aria-label="…">. Square, icon 24 in xl, 20 in l/m, 16 in s/xs. aria-label is required.';
       return;
     }
     var pLabel = ensureProp(set, 'label', 'TEXT', 'Button', 'Label');
@@ -1661,16 +1855,16 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
     var pLead = ensureProp(set, 'iconStart', 'INSTANCE_SWAP', icons.lead.id, 'Leading icon');
     var pShowTrail = ensureProp(set, 'showIconEnd', 'BOOLEAN', false, 'Show trailing icon');
     var pTrail = ensureProp(set, 'iconEnd', 'INSTANCE_SWAP', icons.trail.id, 'Trailing icon');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pLabel };
       p.lead.componentPropertyReferences = { visible: pShowLead, mainComponent: pLead };
       p.trail.componentPropertyReferences = { visible: pShowTrail, mainComponent: pTrail };
     });
-    set.description = '<button class="btn btn--{tone} btn--{appearance} btn--{size}">{label}</button>. ' +
-      'state: pressed = :active / .is-pressed · disabled = disabled · loading = aria-busy="true" + .swing-loader--24 before the label. ' +
-      'size xl 56 · l 48 · m 40 · s 32 · xs 24 (s and xs get a 48 tap area in code). success is solid only, tertiary is primary/neutral only. Full width (.btn--block): set the instance width to Fill. ' +
-      'size glow (.btn--glow, padding 12 16 from space-12 / space-16, height hugs to 44, radius 12, CTA M) has tones glow (white light on the glass line, white label) and glowPurple (.btn--glow-purple: purple sweep, no glass line, Dark 500 label, for light backgrounds). ' +
+    set.description = '<button class="swing_btn swing_btn_{tone} swing_btn_{appearance} swing_btn_{size}">{label}</button>. ' +
+      'state: pressed = :active / .is-pressed · disabled = disabled · loading = aria-busy="true" + .swing_loader_24 before the label. ' +
+      'size xl 56 · l 48 · m 40 · s 32 · xs 24, height hugs with that as min height: padding top/bottom xl 16 · l 12 · m 8 · s 8 · xs 4 from the space tokens (s and xs get a 48 tap area in code). success is solid only, tertiary is primary/neutral only. Full width (.swing_btn_block): set the instance width to Fill. ' +
+      'size glow (.swing_btn_glow, padding 12 16 from space-12 / space-16, height hugs to 44, radius 12, CTA M) has tones glow (white light on the glass line, white label) and glowPurple (.swing_btn_glow_purple: purple sweep, no glass line, Dark 500 label, for light backgrounds). ' +
       'Its "glow" layer is a 1.5px ring mask with "sheen" above it; animate "sheen" in Figma Motion: rotation 0 at 0 ms, -360 at 2000 ms, ease in-out, Loop. Disabled has no glow.';
   }
 
@@ -1682,10 +1876,10 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
       ? 'A button with only an icon, for actions like Share. Same tones and sizes as Button, square. Swap the icon from the instance panel.'
       : 'Change the label and turn the icon on at the start or end from the instance panel. Loading keeps the colour and width; write what is happening, like "Processing payment…". For a full-width button, set the instance width to Fill.',
     code: isIcon
-      ? ['<button class="btn btn--icon btn--soft btn--m" aria-label="Share"><i class="icon" …></i></button>',
-        'Property values are the class names: tone primary = no class, neutral = .btn--neutral · appearance solid = no class, soft = .btn--soft · size xl = .btn--xl, l = no class, m = .btn--m, s = .btn--s, xs = .btn--xs']
-      : ['<button class="btn btn--neutral btn--soft btn--m">Back</button>',
-        'Property values are the class names: tone primary = no class, neutral = .btn--neutral · appearance solid = no class, soft = .btn--soft · size xl = .btn--xl, l = no class, m = .btn--m, s = .btn--s, xs = .btn--xs',
+      ? ['<button class="swing_btn swing_btn_icon swing_btn_soft swing_btn_m" aria-label="Share"><i class="swing_icon" …></i></button>',
+        'Property values are the class names: tone primary = no class, neutral = .swing_btn_neutral · appearance solid = no class, soft = .swing_btn_soft · size xl = .swing_btn_xl, l = no class, m = .swing_btn_m, s = .swing_btn_s, xs = .swing_btn_xs']
+      : ['<button class="swing_btn swing_btn_neutral swing_btn_soft swing_btn_m">Back</button>',
+        'Property values are the class names: tone primary = no class, neutral = .swing_btn_neutral · appearance solid = no class, soft = .swing_btn_soft · size xl = .swing_btn_xl, l = no class, m = .swing_btn_m, s = .swing_btn_s, xs = .swing_btn_xs',
         'state pressed = :active / .is-pressed · disabled = disabled attribute · loading = aria-busy="true" with the loader before the label'],
     colGroups: sizes.map(function (s) { return { label: 'size ' + s + ' · ' + BTN_SIZES[s].h, cols: states }; }),
     rowGroups: tones.map(function (t) { return { label: t, rows: appearsOf(t) }; }),
@@ -1706,13 +1900,13 @@ async function buildButtonSet(R, notes, page, kind, icons, loader) {
 var SC_W = 342, SC_H = 56, SC_PAD = 4, SC_THUMB = 48, SC_DRAG_P = 0.5;
 var SC_TONES = {
   primary: { track: '--purple-50', ring: '--purple-100', label: '--purple-600', fill: '--purple-500', thumb: '--purple-500', thumbDrag: '--purple-600' },
-  danger: { track: '--red-50', ring: '--red-100', label: '--red-700', fill: '--red-700', thumb: '--red-700', thumbDrag: '--red-press' }
+  danger: { track: '--red-50', ring: '--red-100', label: '--red-700', fill: '--red-700', thumb: '--red-700', thumbDrag: '--red-600' }   // --red-press is not a token
 };
 var SC_STATES = ['default', 'dragging', 'loading', 'disabled'];
 
 async function buildSlideConfirm(R, notes, page, icons, loader) {
   var variants = [];
-  Object.keys(SC_TONES).forEach(function (tone) {
+  wireKeys(SC_TONES).forEach(function (tone) {
     SC_STATES.forEach(function (state) { variants.push({ tone: tone, state: state, name: 'tone=' + tone + ', state=' + state }); });
   });
   var parts = {};
@@ -1803,11 +1997,11 @@ async function buildSlideConfirm(R, notes, page, icons, loader) {
   function wire(set) {
     var pLabel = ensureProp(set, 'label', 'TEXT', 'Slide to confirm');
     var pBusy = ensureProp(set, 'busyLabel', 'TEXT', 'Processing…');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       parts[k].label.componentPropertyReferences = { characters: pLabel };
       parts[k].busy.componentPropertyReferences = { characters: pBusy };
     });
-    set.description = '<div class="slide-confirm slide-confirm--{tone}" data-busy-label="{busyLabel}"><span class="slide-confirm__label">{label}</span><button class="slide-confirm__thumb">…</button></div> + slide-confirm.js. ' +
+    set.description = '<div class="swing_slide_confirm swing_slide_confirm_{tone}" data-busy-label="{busyLabel}"><span class="swing_slide_confirm__label">{label}</span><button class="swing_slide_confirm__thumb">…</button></div> + slide-confirm.js. ' +
       'state: dragging = .is-dragging (shown at 50%) · loading = .is-done + aria-busy="true" · disabled = aria-disabled="true". Width: set the instance to Fill.';
   }
 
@@ -1817,8 +2011,8 @@ async function buildSlideConfirm(R, notes, page, icons, loader) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'SlideConfirm',
     description: 'For one action that costs money or cannot be undone, like paying or cancelling a paid booking. Slide past 90% to confirm; a tap does nothing. Track 56, thumb 48, radius 12. Set the instance width to Fill.',
-    code: ['<div class="slide-confirm" data-busy-label="Processing payment…"> … </div> + <script src="/swing/ds/slide-confirm.js">',
-      'tone primary = no class, danger = .slide-confirm--danger · state dragging = .is-dragging · loading = .is-done + aria-busy="true" · disabled = aria-disabled="true"'],
+    code: ['<div class="swing_slide_confirm" data-busy-label="Processing payment…"> … </div> + <script src="/swing/ds/slide-confirm.js">',
+      'tone primary = no class, danger = .swing_slide_confirm_danger · state dragging = .is-dragging · loading = .is-done + aria-busy="true" · disabled = aria-disabled="true"'],
     colGroups: [{ label: 'state', cols: SC_STATES }],
     rowGroups: [{ label: 'tone', rows: tones }],
     place: function (v) { return { cg: 0, c: SC_STATES.indexOf(v.state), rg: 0, r: tones.indexOf(v.tone) }; }
@@ -1890,9 +2084,9 @@ var BADGE_SIZES = { m: { h: 24, type: '--type-b2s' }, s: { h: 20, type: '--type-
 
 async function buildBadge(R, notes, page, icons) {
   var variants = [], parts = {};
-  Object.keys(BADGE_TONES).forEach(function (tone) {
+  wireKeys(BADGE_TONES).forEach(function (tone) {
     BADGE_APPEAR.forEach(function (appear) {
-      Object.keys(BADGE_SIZES).forEach(function (size) {
+      wireKeys(BADGE_SIZES).forEach(function (size) {
         variants.push({ tone: tone, appear: appear, size: size, name: 'tone=' + tone + ', appearance=' + appear + ', size=' + size });
       });
     });
@@ -1924,11 +2118,11 @@ async function buildBadge(R, notes, page, icons) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Paid');
     var pS = ensureProp(set, 'showIcon', 'BOOLEAN', false);
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', icons.clock.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       parts[k].label.componentPropertyReferences = { characters: pL };
       parts[k].icon.componentPropertyReferences = { visible: pS, mainComponent: pI };
     });
-    set.description = '<span class="badge badge--{tone} badge--{appearance} badge--{size}">{label}</span>. A status that needs attention; not tappable (that is Tag). ' +
+    set.description = '<span class="swing_badge swing_badge_{tone} swing_badge_{appearance} swing_badge_{size}">{label}</span>. A status that needs attention; not tappable (that is Tag). ' +
       'tone neutral, appearance soft and size m are the default (no class). Icon: line 16 before the label, never an icon alone.';
   }
   var set = await buildSet(page, 'Badge', variants, buildVariant, wire, function () {}, R);
@@ -1937,8 +2131,8 @@ async function buildBadge(R, notes, page, icons) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Badge',
     description: 'A short status that needs attention, like Pending payment, Paid or Cancelled. Not tappable. Plain facts like "Host" or "Online booking" stay grey text, not a badge. Solid for the one that matters most, dot for dense lists.',
-    code: ['<span class="badge badge--success">Paid</span>',
-      'tone neutral = no class, others = .badge--{tone} · appearance soft = no class, .badge--solid, .badge--dot · size m (24) = no class, s (20) = .badge--s'],
+    code: ['<span class="swing_badge swing_badge_success">Paid</span>',
+      'tone neutral = no class, others = .swing_badge_{tone} · appearance soft = no class, .swing_badge_solid, .swing_badge_dot · size m (24) = no class, s (20) = .swing_badge_s'],
     colGroups: sizes.map(function (s) { return { label: 'size ' + s + ' · ' + BADGE_SIZES[s].h, cols: BADGE_APPEAR }; }),
     rowGroups: [{ label: 'tone', rows: tones }],
     place: function (v) { return { cg: sizes.indexOf(v.size), c: BADGE_APPEAR.indexOf(v.appear), rg: 0, r: tones.indexOf(v.tone) }; }
@@ -1951,7 +2145,7 @@ var COUNTER_TONES = { danger: ['--red-700', '--light-100'], primary: ['--purple-
 
 async function buildCounter(R, notes, page) {
   var variants = [], parts = {};
-  Object.keys(COUNTER_TONES).forEach(function (tone) {
+  wireKeys(COUNTER_TONES).forEach(function (tone) {
     [20, 16].forEach(function (s) {
       ['inline', 'corner'].forEach(function (pl) {
         variants.push({ tone: tone, size: s, placement: pl, name: 'tone=' + tone + ', size=' + s + ', placement=' + pl,
@@ -1974,8 +2168,8 @@ async function buildCounter(R, notes, page) {
   }
   function wire(set) {
     var p = ensureProp(set, 'count', 'TEXT', '3');
-    Object.keys(parts).forEach(function (k) { parts[k].componentPropertyReferences = { characters: p }; });
-    set.description = '<span class="counter counter--{tone}">{count}</span>. Numbers only, "99+" past 99. tone danger = no class. size 16 is the counter inside a small tag (.tag--s). ' +
+    wireKeys(parts).forEach(function (k) { parts[k].componentPropertyReferences = { characters: p }; });
+    set.description = '<span class="swing_counter swing_counter_{tone}">{count}</span>. Numbers only, "99+" past 99. tone danger = no class. size 16 is the counter inside a small tag (.swing_tag_s). ' +
       'placement corner = inside .has-indicator on an icon or avatar: 2px ring in the page colour (--color-bg), offset -4 top and right. inline = in a tag or a row, no ring.';
   }
   var set = await buildSet(page, 'Counter', variants, buildVariant, wire, function () {}, R);
@@ -1984,8 +2178,8 @@ async function buildCounter(R, notes, page) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Counter',
     description: 'A count (3, 12, 99+). corner sits on the top-right of an icon or avatar with a 2px ring in the page colour, so it stays readable over the edge. inline sits in a tag or a list row, no ring.',
-    code: ['<span class="has-indicator"><i class="icon" …></i><span class="counter">3</span></span>',
-      'tone danger = no class · primary = .counter--primary · neutral = .counter--neutral · placement corner = inside .has-indicator, inline = on its own'],
+    code: ['<span class="has-indicator"><i class="swing_icon" …></i><span class="swing_counter">3</span></span>',
+      'tone danger = no class · primary = .swing_counter_primary · neutral = .swing_counter_neutral · placement corner = inside .has-indicator, inline = on its own'],
     colGroups: [{ label: 'size · placement', cols: cols }],
     rowGroups: [{ label: 'tone', rows: tones }],
     place: function (v) { return { cg: 0, c: cols.indexOf(v.size + ' · ' + v.placement), rg: 0, r: tones.indexOf(v.tone) }; }
@@ -2009,8 +2203,8 @@ async function buildIndicator(R, notes, page) {
     comp.effects = v.placement === 'corner' ? bgRing(R) : [];
   }
   function wire(set) {
-    set.description = '<span class="indicator"></span>. 8px red-500 dot for "something new" without a number; the DS has one colour only. ' +
-      'placement corner = inside .has-indicator (top-right of an icon or avatar, 2px ring in --color-bg). inline = in a row, e.g. .notif-row unread, no ring.';
+    set.description = '<span class="swing_indicator"></span>. 8px red-500 dot for "something new" without a number; the DS has one colour only. ' +
+      'placement corner = inside .has-indicator (top-right of an icon or avatar, 2px ring in --color-bg). inline = in a row, e.g. .swing_notif_row unread, no ring.';
   }
   var set = await buildSet(page, 'Indicator', variants, buildVariant, wire, function () {}, R);
   var pls = ['corner', 'inline'];
@@ -2018,8 +2212,8 @@ async function buildIndicator(R, notes, page) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Indicator',
     description: 'An 8px dot for "something new" when there is no number to show. One colour in the DS (red-500). corner goes on an icon or avatar with a 2px ring in the page colour; inline sits in a row, like an unread notification.',
-    code: ['<span class="has-indicator"><img class="avatar" …><span class="indicator"></span></span>',
-      'placement corner = inside .has-indicator · inline = on its own, e.g. inside .notif-row'],
+    code: ['<span class="has-indicator"><img class="swing_avatar" …><span class="swing_indicator"></span></span>',
+      'placement corner = inside .has-indicator · inline = on its own, e.g. inside .swing_notif_row'],
     colGroups: [{ label: 'placement', cols: pls }],
     rowGroups: [{ label: 'tone', rows: ['danger · red-500'] }],
     place: function (v) { return { cg: 0, c: pls.indexOf(v.placement), rg: 0, r: 0 }; }
@@ -2058,8 +2252,8 @@ function tagPair(tone, size) { return (tone === 'ads') === (size === 'ads'); }
 
 async function buildTag(R, notes, page, icons, counter) {
   var variants = [], parts = {};
-  Object.keys(TAG_TONES).forEach(function (tone) {
-    Object.keys(TAG_SIZES).forEach(function (size) {
+  wireKeys(TAG_TONES).forEach(function (tone) {
+    wireKeys(TAG_SIZES).forEach(function (size) {
       if (!tagPair(tone, size)) return;
       TAG_STATES.forEach(function (state) {
         variants.push({ tone: tone, size: size, state: state, name: 'tone=' + tone + ', size=' + size + ', state=' + state });
@@ -2121,7 +2315,7 @@ async function buildTag(R, notes, page, icons, counter) {
     var pC = ensureProp(set, 'showCounter', 'BOOLEAN', false);
     var pCh = ensureProp(set, 'showChevron', 'BOOLEAN', false);
     var pR = ensureProp(set, 'showRemove', 'BOOLEAN', false);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.lead.componentPropertyReferences = { visible: pSI, mainComponent: pI };
@@ -2129,8 +2323,8 @@ async function buildTag(R, notes, page, icons, counter) {
       p.chevron.componentPropertyReferences = { visible: pCh };
       p.remove.componentPropertyReferences = { visible: pR };
     });
-    set.description = '<button class="tag tag--{tone} tag--{size}" type="button" aria-pressed="false">{label}</button>. A tappable pill for filters and quick choices (a status only = Badge). ' +
-      'state selected = aria-pressed="true" or .is-on · pressed = :active · disabled = disabled. showChevron = menu tag (aria-haspopup), showRemove = .tag__remove (a picked value). ' +
+    set.description = '<button class="swing_tag swing_tag_{tone} swing_tag_{size}" type="button" aria-pressed="false">{label}</button>. A tappable pill for filters and quick choices (a status only = Badge). ' +
+      'state selected = aria-pressed="true" or .is-on · pressed = :active · disabled = disabled. showChevron = menu tag (aria-haspopup), showRemove = .swing_tag__remove (a picked value). ' +
       'One colour per tag group; neutral is the default for filters.';
   }
   var set = await buildSet(page, 'Tag', variants, buildVariant, wire, function () {}, R);
@@ -2139,8 +2333,8 @@ async function buildTag(R, notes, page, icons, counter) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Tag',
     description: 'A small tappable pill for filters, interests or quick choices. Selected turns solid; not selected has a thin ring. Use one colour per group: neutral for filters, primary for the main choice on a screen, the other colours only for categories that have their own colour. on-media is for tags on a photo.',
-    code: ['<div class="tags" role="group" aria-label="Sport"><button class="tag" type="button" aria-pressed="true">Golf</button> … </div>',
-      'tone neutral = no class, others = .tag--{tone} (.tag--on-media on photos) · size m (32) = no class, s (24) = .tag--s · tone ads + size ads (28) = .tags--ads on the group · state selected = aria-pressed="true" / .is-on, disabled = disabled'],
+    code: ['<div class="swing_tags" role="group" aria-label="Sport"><button class="swing_tag" type="button" aria-pressed="true">Golf</button> … </div>',
+      'tone neutral = no class, others = .swing_tag_{tone} (.swing_tag_on_media on photos) · size m (32) = no class, s (24) = .swing_tag_s · tone ads + size ads (28) = .swing_tags_ads on the group · state selected = aria-pressed="true" / .is-on, disabled = disabled'],
     colGroups: sizes.map(function (s) { return { label: 'size ' + s + ' · ' + TAG_SIZES[s].h, cols: TAG_STATES }; }),
     rowGroups: [{ label: 'tone', rows: tones }],
     place: function (v) { return { cg: sizes.indexOf(v.size), c: TAG_STATES.indexOf(v.state), rg: 0, r: tones.indexOf(v.tone) }; }
@@ -2211,8 +2405,8 @@ async function buildControl(R, notes, page, kind, checkIcon) {
   }
   function wire(set) {
     set.description = isCb
-      ? '<input type="checkbox" class="checkbox">. checked true = :checked · mixed = el.indeterminate = true · state hover = :hover · pressed = :active (also scales to .92 on the web) · disabled = disabled · invalid = aria-invalid="true". Box 24, radius 8, 2px ring, tick = icons/solid/checkmark 16.'
-      : '<input type="radio" class="radio" name="…">. checked true = :checked · state hover / pressed / disabled / invalid as Checkbox. Circle 24, 2px ring, white dot 8 when checked.';
+      ? '<input type="checkbox" class="swing_checkbox">. checked true = :checked · mixed = el.indeterminate = true · state hover = :hover · pressed = :active (also scales to .92 on the web) · disabled = disabled · invalid = aria-invalid="true". Box 24, radius 8, 2px ring, tick = icons/solid/checkmark 16.'
+      : '<input type="radio" class="swing_radio" name="…">. checked true = :checked · state hover / pressed / disabled / invalid as Checkbox. Circle 24, 2px ring, white dot 8 when checked.';
   }
   var set = await buildSet(page, setName, variants, buildVariant, wire, function () {}, R);
   var rows = isCb ? ['false', 'true', 'mixed'] : ['false', 'true'];
@@ -2223,9 +2417,9 @@ async function buildControl(R, notes, page, kind, checkIcon) {
       ? 'Pick any number of options. mixed is the parent of a group where only some children are ticked. Pair it with a label (row 44) unless the box alone is clear from context.'
       : 'Pick one option from a short list. Selected = Purple 500 fill with a white dot, matching a ticked checkbox.',
     code: isCb
-      ? ['<label class="check"><input type="checkbox" class="checkbox"><span class="check__text"><span class="check__label">Caddie</span></span></label>',
+      ? ['<label class="swing_check"><input type="checkbox" class="swing_checkbox"><span class="swing_check__text"><span class="swing_check__label">Caddie</span></span></label>',
         'checked true = :checked · mixed = indeterminate · state pressed = :active · disabled = disabled · invalid = aria-invalid="true"']
-      : ['<label class="check"><input type="radio" class="radio" name="holes"><span class="check__text"><span class="check__label">18 holes</span></span></label>',
+      : ['<label class="swing_check"><input type="radio" class="swing_radio" name="holes"><span class="swing_check__text"><span class="swing_check__label">18 holes</span></span></label>',
         'checked true = :checked · state pressed = :active · disabled = disabled · invalid = aria-invalid="true"'],
     colGroups: [{ label: 'state', cols: CTRL_STATES }],
     rowGroups: [{ label: 'checked', rows: rows }],
@@ -2259,7 +2453,7 @@ async function buildSwitch(R, notes, page) {
     else thumb.effects = [];
   }
   function wire(set) {
-    set.description = '<input type="checkbox" role="switch" class="switch">. For an instant on/off (notifications), not for a choice that needs Save. ' +
+    set.description = '<input type="checkbox" role="switch" class="swing_switch">. For an instant on/off (notifications), not for a choice that needs Save. ' +
       'checked true = :checked · pressed = :active (thumb stretches to 24) · disabled = disabled. Track 40×24, thumb 20 with Elevation/Scale/1.';
   }
   var set = await buildSet(page, 'Switch', variants, buildVariant, wire, function () {}, R);
@@ -2268,7 +2462,7 @@ async function buildSwitch(R, notes, page) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Switch',
     description: 'An instant on/off, like notifications. The change happens right away; if it needs a Save button, use a Checkbox instead.',
-    code: ['<input type="checkbox" role="switch" class="switch" aria-label="Notifications">',
+    code: ['<input type="checkbox" role="switch" class="swing_switch" aria-label="Notifications">',
       'checked true = :checked · state pressed = :active · disabled = disabled'],
     colGroups: [{ label: 'state', cols: SW_STATES }],
     rowGroups: [{ label: 'checked', rows: rows }],
@@ -2299,7 +2493,7 @@ var CHECK_W = 342;
 
 async function controlSet(R, notes, kind) {
   var pg = await pageNamed(kind === 'checkbox' ? 'Checkbox' : 'Radio');
-  var set = pg.findOne(function (n) { return n.type === 'COMPONENT_SET' && n.name === (kind === 'checkbox' ? 'Checkbox' : 'Radio'); });
+  var set = findLogical(pg, kind === 'checkbox' ? 'Checkbox' : 'Radio');
   if (set) return set;
   return (kind === 'checkbox' ? await buildCheckboxPage(R, notes) : await buildRadioPage(R, notes)).set;
 }
@@ -2386,15 +2580,15 @@ async function buildCheck(R, notes, page) {
     var pH = ensureProp(set, 'hint', 'TEXT', 'One caddie for your group');
     var pSM = ensureProp(set, 'showMeta', 'BOOLEAN', false);
     var pM = ensureProp(set, 'meta', 'TEXT', 'Rp 150,000');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.hint.componentPropertyReferences = { visible: pSH, characters: pH };
       p.metaBox.componentPropertyReferences = { visible: pSM };
       p.meta.componentPropertyReferences = { characters: pM };
     });
-    set.description = '<label class="check [check--card]"><input type="{control}" class="{control}"><span class="check__text"><span class="check__label">{label}</span><span class="check__hint">{hint}</span></span><span class="check__meta">{meta}</span></label>. ' +
-      'layout card = .check--card (selected: purple-50 + purple-500 ring). Row min 44, gap 12, label B1, hint B2 dark-300, meta B2 Semibold. Width 342: set the instance to Fill.';
+    set.description = '<label class="swing_check [swing_check_card]"><input type="{control}" class="{control}"><span class="swing_check__text"><span class="swing_check__label">{label}</span><span class="swing_check__hint">{hint}</span></span><span class="swing_check__meta">{meta}</span></label>. ' +
+      'layout card = .swing_check_card (selected: purple-50 + purple-500 ring). Row min 44, gap 12, label B1, hint B2 dark-300, meta B2 Semibold. Width 342: set the instance to Fill.';
   }
   var set = await buildSet(page, 'Check', variants, buildVariant, wire, function () {}, R);
   var ctls = ['checkbox', 'radio'], lays = ['row', 'card'];
@@ -2402,8 +2596,8 @@ async function buildCheck(R, notes, page) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Check',
     description: 'A Checkbox or Radio with its label, as one tappable row (44 tall). card makes it a selectable tile for bigger choices. Turn on hint for a second line and meta for a value on the right, like a price.',
-    code: ['<label class="check"><input type="checkbox" class="checkbox"><span class="check__text"><span class="check__label">Caddie</span></span></label>',
-      'layout row = .check · card = .check .check--card · group = <fieldset class="check-group"> + <legend class="check-group__legend">'],
+    code: ['<label class="swing_check"><input type="checkbox" class="swing_checkbox"><span class="swing_check__text"><span class="swing_check__label">Caddie</span></span></label>',
+      'layout row = .swing_check · card = .swing_check .swing_check_card · group = <fieldset class="swing_check_group"> + <legend class="swing_check_group__legend">'],
     colGroups: ctls.map(function (c) { return { label: c, cols: ['checked false', 'checked true'] }; }),
     rowGroups: lays.map(function (l) { return { label: l, rows: ['default', 'disabled'] }; }),
     place: function (v) { return { cg: ctls.indexOf(v.control), c: v.checked === 'true' ? 1 : 0, rg: lays.indexOf(v.layout), r: v.state === 'default' ? 0 : 1 }; }
@@ -2662,7 +2856,7 @@ async function buildTextField(R, notes, page, icons) {
     var pBL = ensureProp(set, 'buttonLabel', 'TEXT', 'Change');
     var pSBI = ensureProp(set, 'showButtonIcon', 'BOOLEAN', false);
     var pBI = ensureProp(set, 'buttonIcon', 'INSTANCE_SWAP', icons.info.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       if (p.label) p.label.componentPropertyReferences = { characters: pL };
       if (p.value) p.value.componentPropertyReferences = { characters: pV };
@@ -2676,9 +2870,9 @@ async function buildTextField(R, notes, page, icons) {
       if (p.code) p.code.componentPropertyReferences = { characters: pCC };
       if (p.btn) { p.btn.componentPropertyReferences = { characters: pBL }; p.btnIcon.componentPropertyReferences = { visible: pSBI, mainComponent: pBI }; }
     });
-    set.description = '<div class="field [field--phone|field--search] [is-error|is-success]"><div class="field__box"><input class="field__input" placeholder="{placeholder}"><label class="field__label">{label}</label></div><p class="field__help">{helpText}</p></div>. ' +
-      'type password = <input type="password"> + show/hide .field__action · multiline = <textarea class="field__input"> (2× tall) + .field__count · phone = .field--phone with .field__cc (+62, label always up) · search = .field--search (48, glass icon, visible placeholder, no label). ' +
-      'state focus = :focus-within · error = .is-error · success = .is-success · disabled / readonly = on the input · locked = .field--locked (ADS: readonly, dark-200, .field__btn "Change" in purple-500) · lockedWarning = .field__btn--warning (orange-500, e.g. Verify email + icon 14). filled = has a value. Width 342: set the instance to Fill.';
+    set.description = '<div class="swing_field [swing_field_phone|swing_field_search] [is-error|is-success]"><div class="swing_field__box"><input class="swing_field__input" placeholder="{placeholder}"><label class="swing_field__label">{label}</label></div><p class="swing_field__help">{helpText}</p></div>. ' +
+      'type password = <input type="password"> + show/hide .swing_field__action · multiline = <textarea class="swing_field__input"> (2× tall) + .swing_field__count · phone = .swing_field_phone with .swing_field__cc (+62, label always up) · search = .swing_field_search (48, glass icon, visible placeholder, no label). ' +
+      'state focus = :focus-within · error = .is-error · success = .is-success · disabled / readonly = on the input · locked = .swing_field_locked (ADS: readonly, dark-200, .swing_field__btn "Change" in purple-500) · lockedWarning = .swing_field__btn_warning (orange-500, e.g. Verify email + icon 14). filled = has a value. Width 342: set the instance to Fill.';
   }
 
   var set = await buildSet(page, 'TextField', variants, buildVariant, wire, function () {}, R);
@@ -2686,8 +2880,8 @@ async function buildTextField(R, notes, page, icons) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'TextField',
     description: 'One component for every input. type picks the kind: text, password (show/hide), multiline (counter), phone (country code, label always up) and search (48, no label). The placeholder is only a hint while typing, never the label.',
-    code: ['<div class="field"><div class="field__box"><input class="field__input" id="email" type="email" placeholder="name@email.com"><label class="field__label" for="email">Email</label></div><p class="field__help">We send the receipt here</p></div>',
-      'type password = type="password" · multiline = <textarea> · phone = .field--phone · search = .field--search · state error = .is-error · success = .is-success · focus = :focus-within'],
+    code: ['<div class="swing_field"><div class="swing_field__box"><input class="swing_field__input" id="email" type="email" placeholder="name@email.com"><label class="swing_field__label" for="email">Email</label></div><p class="swing_field__help">We send the receipt here</p></div>',
+      'type password = type="password" · multiline = <textarea> · phone = .swing_field_phone · search = .swing_field_search · state error = .is-error · success = .is-success · focus = :focus-within'],
     colGroups: [{ label: 'filled', cols: ['false · empty', 'true · has value'] }],
     rowGroups: TF_TYPE_ORDER.map(function (t) { return { label: 'type ' + t, rows: TF_TYPES[t].states }; }),
     place: function (v) { return { cg: 0, c: v.filled === 'true' ? 1 : 0, rg: TF_TYPE_ORDER.indexOf(v.type), r: TF_TYPES[v.type].states.indexOf(v.state) }; }
@@ -2782,7 +2976,7 @@ async function buildSelect(R, notes, page, icons) {
     var pH = ensureProp(set, 'helpText', 'TEXT', 'We show courses near this city');
     var pSL = ensureProp(set, 'showLeadIcon', 'BOOLEAN', false);
     var pLI = ensureProp(set, 'leadIcon', 'INSTANCE_SWAP', icons.lead.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       if (p.value) p.value.componentPropertyReferences = { characters: pV };
@@ -2790,16 +2984,16 @@ async function buildSelect(R, notes, page, icons) {
       p.helpText.componentPropertyReferences = { characters: pH };
       p.lead.componentPropertyReferences = { visible: pSL, mainComponent: pLI };
     });
-    set.description = '<div class="field field--select"><button class="field__box field__trigger" aria-haspopup="dialog"><span class="field__value">{value}</span><span class="field__label">{label}</span><i class="icon field__chev"></i></button></div>. ' +
-      'Opens a bottom sheet of Option rows. showLeadIcon = .field__lead (label moves right) · showHelp = .field__help. state open = .is-open (chevron turns) · error = .field.is-error · disabled = disabled. filled = a value is picked. Width 342: set the instance to Fill.';
+    set.description = '<div class="swing_field field--select"><button class="swing_field__box swing_field__trigger" aria-haspopup="dialog"><span class="swing_field__value">{value}</span><span class="swing_field__label">{label}</span><i class="swing_icon swing_field__chev"></i></button></div>. ' +
+      'Opens a bottom sheet of Option rows. showLeadIcon = .swing_field__lead (label moves right) · showHelp = .swing_field__help. state open = .is-open (chevron turns) · error = .swing_field.is-error · disabled = disabled. filled = a value is picked. Width 342: set the instance to Fill.';
   }
   var set = await buildSet(page, 'Select', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Select',
     description: 'A field that opens a bottom sheet of options instead of a keyboard. Same box as TextField; the chevron turns while the sheet is open.',
-    code: ['<div class="field field--select"><button class="field__box field__trigger" type="button" aria-haspopup="dialog" data-sheet="city-sheet"><span class="field__value"></span><span class="field__label">City</span>…</button></div>',
-      'state open = .field__trigger.is-open · error = .field.is-error · disabled = disabled · filled = .field__value has text'],
+    code: ['<div class="swing_field field--select"><button class="swing_field__box swing_field__trigger" type="button" aria-haspopup="dialog" data-sheet="city-sheet"><span class="swing_field__value"></span><span class="swing_field__label">City</span>…</button></div>',
+      'state open = .swing_field__trigger.is-open · error = .swing_field.is-error · disabled = disabled · filled = .swing_field__value has text'],
     colGroups: [{ label: 'filled', cols: ['false · empty', 'true · picked'] }],
     rowGroups: [{ label: 'state', rows: SEL_STATES }],
     place: function (v) { return { cg: 0, c: v.filled === 'true' ? 1 : 0, rg: 0, r: SEL_STATES.indexOf(v.state) }; },
@@ -2867,14 +3061,14 @@ async function buildOption(R, notes, page, icons) {
     var pSL = ensureProp(set, 'showLeadIcon', 'BOOLEAN', false);
     var pLI = ensureProp(set, 'leadIcon', 'INSTANCE_SWAP', icons.lead.id);
     var pD = ensureProp(set, 'showDivider', 'BOOLEAN', true);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.hint.componentPropertyReferences = { visible: pSH, characters: pH };
       p.lead.componentPropertyReferences = { visible: pSL, mainComponent: pLI };
       p.line.componentPropertyReferences = { visible: pD };
     });
-    set.description = '<button class="option" role="option" aria-selected="{selected}"><span class="option__text"><span class="option__label">{label}</span><span class="option__hint">{hint}</span></span></button> inside <div class="options" role="listbox">. ' +
+    set.description = '<button class="swing_option" role="option" aria-selected="{selected}"><span class="swing_option__text"><span class="swing_option__label">{label}</span><span class="swing_option__hint">{hint}</span></span></button> inside <div class="swing_options" role="listbox">. ' +
       'selected = purple-600 + B1 Semibold + check · pressed = :active (light-200). Min 56, 1px light-500 line under each; turn showDivider off on the last one.';
   }
   var set = await buildSet(page, 'Option', variants, buildVariant, wire, function () {}, R);
@@ -2882,8 +3076,8 @@ async function buildOption(R, notes, page, icons) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Option',
     description: 'One choice in the Select sheet. The picked one is purple with a check. Turn the divider off on the last row.',
-    code: ['<div class="options" role="listbox"><button class="option" role="option" aria-selected="true"><span class="option__text"><span class="option__label">Jakarta</span></span></button></div>',
-      'selected = aria-selected="true" · pressed = :active · leadIcon = .option__lead · hint = .option__hint'],
+    code: ['<div class="swing_options" role="listbox"><button class="swing_option" role="option" aria-selected="true"><span class="swing_option__text"><span class="swing_option__label">Jakarta</span></span></button></div>',
+      'selected = aria-selected="true" · pressed = :active · leadIcon = .swing_option__lead · hint = .swing_option__hint'],
     colGroups: [{ label: 'state', cols: ['default', 'pressed'] }],
     rowGroups: [{ label: 'selected', rows: ['false', 'true'] }],
     place: function (v) { return { cg: 0, c: v.state === 'default' ? 0 : 1, rg: 0, r: v.selected === 'true' ? 1 : 0 }; }
@@ -2946,19 +3140,19 @@ async function buildMenuItem(R, notes, page, icons) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Newest first');
     var pS = ensureProp(set, 'showIcon', 'BOOLEAN', false);
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', icons.lead.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       parts[k].label.componentPropertyReferences = { characters: pL };
       parts[k].ic.componentPropertyReferences = { visible: pS, mainComponent: pI };
     });
-    set.description = '<button class="menu__item" role="menuitem">{label}</button>. type checked = role="menuitemradio" aria-checked="true" (purple-600, B1 Semibold, check) · danger = .menu__item--danger (red-700) · pressed = :active / :hover (light-300). Min 44, radius 8, icon 20.';
+    set.description = '<button class="swing_menu__item" role="menuitem">{label}</button>. type checked = role="menuitemradio" aria-checked="true" (purple-600, B1 Semibold, check) · danger = .swing_menu__item_danger (red-700) · pressed = :active / :hover (light-300). Min 44, radius 8, icon 20.';
   }
   var set = await buildSet(page, 'MenuItem', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'MenuItem',
     description: 'One action in a dropdown menu. checked marks the current choice (sort order); danger is for delete or cancel.',
-    code: ['<button class="menu__item" role="menuitem"><i class="icon" …></i>Edit</button>',
-      'type checked = aria-checked="true" · danger = .menu__item--danger · state pressed = :active'],
+    code: ['<button class="swing_menu__item" role="menuitem"><i class="swing_icon" …></i>Edit</button>',
+      'type checked = aria-checked="true" · danger = .swing_menu__item_danger · state pressed = :active'],
     colGroups: [{ label: 'state', cols: ['default', 'pressed'] }],
     rowGroups: [{ label: 'type', rows: MI_TYPES }],
     place: function (v) { return { cg: 0, c: v.state === 'default' ? 0 : 1, rg: 0, r: MI_TYPES.indexOf(v.type) }; }
@@ -3011,7 +3205,7 @@ async function buildMenu(R, notes, page, items) {
     }
   }
   function wire(set) {
-    set.description = '<div class="menu-wrap"><button aria-haspopup="menu">Sort</button><div class="menu" role="menu">…menu__item…</div></div>. Opens under its trigger (.menu--end aligns right). ' +
+    set.description = '<div class="swing_menu_wrap"><button aria-haspopup="menu">Sort</button><div class="swing_menu" role="menu">…swing_menu__item…</div></div>. Opens under its trigger (.swing_menu_end aligns right). ' +
       'Padding 4, radius 12, 1px light-500 ring, Elevation/Scale/2, width 200–280. Items are MenuItem instances: add, remove or reorder them in the instance.';
   }
   var set = await buildSet(page, 'Menu', variants, buildVariant, wire, function () {}, R);
@@ -3020,8 +3214,8 @@ async function buildMenu(R, notes, page, items) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Menu',
     description: 'A short list of actions that opens under its trigger: sort order, or the overflow menu. Built from MenuItem instances, so labels and items can change per screen.',
-    code: ['<div class="menu-wrap"><button class="btn btn--s btn--soft" aria-haspopup="menu" aria-expanded="true">Sort</button><div class="menu is-open" role="menu">…</div></div>',
-      '.menu--end aligns to the right edge of the trigger · .menu__label = small heading · .menu__sep = divider'],
+    code: ['<div class="swing_menu_wrap"><button class="swing_btn swing_btn_s swing_btn_soft" aria-haspopup="menu" aria-expanded="true">Sort</button><div class="swing_menu is-open" role="menu">…</div></div>',
+      '.swing_menu_end aligns to the right edge of the trigger · .swing_menu__label = small heading · .swing_menu__sep = divider'],
     colGroups: [{ label: 'type', cols: ['sort', 'actions'] }],
     rowGroups: [{ label: 'example', rows: ['menu'] }],
     place: function (v) { return { cg: 0, c: v.kind === 'sort' ? 0 : 1, rg: 0, r: 0 }; }
@@ -3069,7 +3263,7 @@ function bottomLine(R, parent, name, left, css) {
 
 async function switchSet(R, notes) {
   var pg = await pageNamed('Switch');
-  var set = pg.findOne(function (n) { return n.type === 'COMPONENT_SET' && n.name === 'Switch'; });
+  var set = findLogical(pg, 'Switch');
   return set || (await buildSwitchPage(R, notes)).set;
 }
 
@@ -3155,7 +3349,7 @@ async function buildListItem(R, notes, page, icons) {
     var pLI = ensureProp(set, 'leadIcon', 'INSTANCE_SWAP', icons.lead.id);
     var pD = ensureProp(set, 'showDivider', 'BOOLEAN', true);
     var pDI = ensureProp(set, 'insetDivider', 'BOOLEAN', false);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.title.componentPropertyReferences = { characters: pT };
       if (p.body) p.body.componentPropertyReferences = { characters: pB };
@@ -3165,17 +3359,17 @@ async function buildListItem(R, notes, page, icons) {
       p.line.componentPropertyReferences = { visible: pD };
       p.lineInset.componentPropertyReferences = { visible: pDI };
     });
-    set.description = '<a class="list-item [list-item--standard] [list-item--danger]"><span class="list-item__lead">…</span><span class="list-item__text"><span class="list-item__title">{title}</span><span class="list-item__body">{body}</span></span>…trailing…</a> inside <div class="list">. ' +
-      'size compact = title only, padding 16, min 56 · standard = title + body, min 76. trailing chevron = .list-item__chev · meta = .list-item__meta (+ chevron, showChevron) · dot = .list-item__dot · switch = .switch · none. tone danger = .list-item--danger. pressed = :active. ' +
-      'Turn showDivider off on the last row (CSS hides it). insetDivider = .list--inset-icon (line starts at the text). Width 342: set to Fill.';
+    set.description = '<a class="swing_list_item [swing_list_item_standard] [swing_list_item_danger]"><span class="swing_list_item__lead">…</span><span class="swing_list_item__text"><span class="swing_list_item__title">{title}</span><span class="swing_list_item__body">{body}</span></span>…trailing…</a> inside <div class="swing_list">. ' +
+      'size compact = title only, padding 16, min 56 · standard = title + body, min 76. trailing chevron = .swing_list_item__chev · meta = .swing_list_item__meta (+ chevron, showChevron) · dot = .swing_list_item__dot · switch = .swing_switch · none. tone danger = .swing_list_item_danger. pressed = :active. ' +
+      'Turn showDivider off on the last row (CSS hides it). insetDivider = .swing_list_inset_icon (line starts at the text). Width 342: set to Fill.';
   }
   var set = await buildSet(page, 'ListItem', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'ListItem',
     description: 'One row of a list: settings, a booking, a toggle. Compact is title only, standard adds a body line. The row is the tap target; the divider stops after the last row.',
-    code: ['<div class="list list--inset-icon"><a class="list-item" href="#"><span class="list-item__lead"><i class="icon" …></i></span><span class="list-item__text"><span class="list-item__title">Account settings</span></span><i class="icon list-item__chev" …></i></a></div>',
-      'size standard = .list-item--standard · tone danger = .list-item--danger · trailing meta = .list-item__meta · dot = .list-item__dot · switch = .switch'],
+    code: ['<div class="swing_list swing_list_inset_icon"><a class="swing_list_item" href="#"><span class="swing_list_item__lead"><i class="swing_icon" …></i></span><span class="swing_list_item__text"><span class="swing_list_item__title">Account settings</span></span><i class="swing_icon swing_list_item__chev" …></i></a></div>',
+      'size standard = .swing_list_item_standard · tone danger = .swing_list_item_danger · trailing meta = .swing_list_item__meta · dot = .swing_list_item__dot · switch = .swing_switch'],
     colGroups: [{ label: 'tone default', cols: ['default', 'pressed'] }, { label: 'tone danger', cols: ['default', 'pressed'] }],
     rowGroups: [{ label: 'size compact', rows: LI_TRAIL }, { label: 'size standard', rows: LI_TRAIL }],
     place: function (v) { return { cg: v.tone === 'danger' ? 1 : 0, c: v.state === 'pressed' ? 1 : 0, rg: v.size === 'standard' ? 1 : 0, r: LI_TRAIL.indexOf(v.trailing) }; }
@@ -3226,7 +3420,7 @@ async function buildList(R, notes, page, items, icons) {
     }
   }
   function wire(set) {
-    set.description = '<div class="list [list--inset-icon] [list--flush]">…list-item…</div> with an optional <p class="list__head">. Rows are ListItem instances: add, remove or reorder them, and turn showDivider off on the last one.';
+    set.description = '<div class="swing_list [swing_list_inset_icon] [swing_list_flush]">…list-item…</div> with an optional <p class="swing_list__head">. Rows are ListItem instances: add, remove or reorder them, and turn showDivider off on the last one.';
   }
   var set = await buildSet(page, 'List', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return /^type=/.test(c.name); });
@@ -3235,8 +3429,8 @@ async function buildList(R, notes, page, items, icons) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'List',
     description: 'Ready lists built from ListItem instances: a settings group with icons (inset divider), bookings with a body line, and switches.',
-    code: ['<p class="list__head">Account</p><div class="list list--inset-icon">…</div>',
-      '.list--inset-icon / --inset-avatar = divider starts at the text · .list--flush = no dividers (inside a card) · .list--bleed = pressed row reaches the screen edge'],
+    code: ['<p class="swing_list__head">Account</p><div class="swing_list swing_list_inset_icon">…</div>',
+      '.swing_list_inset_icon / --inset-avatar = divider starts at the text · .swing_list_flush = no dividers (inside a card) · .swing_list_bleed = pressed row reaches the screen edge'],
     colGroups: [{ label: 'type', cols: KINDS }],
     rowGroups: [{ label: 'example', rows: ['list'] }],
     place: function (v) { return { cg: 0, c: KINDS.indexOf(v.kind), rg: 0, r: 0 }; }
@@ -3255,7 +3449,7 @@ async function buildListPage(R, notes) {
   };
   var a = await buildListItem(R, notes, page, icons);
   var b = await buildList(R, notes, page, a, icons);
-  notes.push('ListItem: on the web the chevron pulls 4px into the right edge (margin-right -4); Figma has no negative margin. Accordion rows (.list-acc) are not a component yet.');
+  notes.push('ListItem: on the web the chevron pulls 4px into the right edge (margin-right -4); Figma has no negative margin. Accordion rows (.swing_list_acc) are not a component yet.');
   return { set: a.set, count: a.count + b.count, label: 'ListItem ' + a.count + ', List ' + b.count + ' variants' };
 }
 
@@ -3306,18 +3500,18 @@ async function buildTab(R, notes, page, icons) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Reservations');
     var pS = ensureProp(set, 'showIcon', 'BOOLEAN', false);
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', icons.icon.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       parts[k].label.componentPropertyReferences = { characters: pL };
       parts[k].icon.componentPropertyReferences = { visible: pS, mainComponent: pI };
     });
-    set.description = '<button class="tab" role="tab" aria-selected="{selected}">{label}</button>. size l = H6, padding 12, icon 20 · s = .tabs--s (B2 Semibold, padding 8, icon 16). Height 44 (tap-min). selected = purple-600 + 2px purple-500 bar.';
+    set.description = '<button class="swing_tab" role="tab" aria-selected="{selected}">{label}</button>. size l = H6, padding 12, icon 20 · s = .swing_tabs_s (B2 Semibold, padding 8, icon 16). Height 44 (tap-min). selected = purple-600 + 2px purple-500 bar.';
   }
   var set = await buildSet(page, 'Tab', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Tab',
     description: 'One tab. The selected one is purple with a 2px bar under the label. Use the small size for second-level tabs inside a card or sheet.',
-    code: ['<button class="tab" role="tab" aria-selected="true">Reservations</button>', 'selected = aria-selected="true" · size s = inside .tabs--s · showIcon = <i class="icon"> before the label'],
+    code: ['<button class="swing_tab" role="tab" aria-selected="true">Reservations</button>', 'selected = aria-selected="true" · size s = inside .swing_tabs_s · showIcon = <i class="swing_icon"> before the label'],
     colGroups: [{ label: 'selected', cols: ['false', 'true'] }],
     rowGroups: [{ label: 'size', rows: ['l', 's'] }],
     place: function (v) { return { cg: 0, c: v.selected === 'true' ? 1 : 0, rg: 0, r: v.size === 's' ? 1 : 0 }; }
@@ -3349,7 +3543,7 @@ async function buildTabs(R, notes, page, tab) {
     });
   }
   function wire(set) {
-    set.description = '<div class="tabs [tabs--fixed] [tabs--s]" role="tablist">…tab…</div>. Padding 12 (s: 8) so the first label lines up with the page edge, 1px light-500 line under (--line-sticky). ' +
+    set.description = '<div class="swing_tabs [swing_tabs_fixed] [swing_tabs_s]" role="tablist">…tab…</div>. Padding 12 (s: 8) so the first label lines up with the page edge, 1px light-500 line under (--line-sticky). ' +
       'type flexible = tabs hug their label and scroll sideways · fixed = equal widths, max 4, width 390 (set to Fill). Tabs are Tab instances: swap selected, edit labels, add or remove.';
   }
   var set = await buildSet(page, 'Tabs', variants, buildVariant, wire, function () {}, R);
@@ -3358,8 +3552,8 @@ async function buildTabs(R, notes, page, tab) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Tabs',
     description: 'A row of Tab instances with the base line under it. Flexible tabs hug their labels and scroll; fixed tabs split the width equally (max 4).',
-    code: ['<div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="true">Reservations</button>…</div>',
-      'type fixed = .tabs--fixed · size s = .tabs--s · .tabs--flush = no side padding inside a padded container'],
+    code: ['<div class="swing_tabs" role="tablist"><button class="swing_tab" role="tab" aria-selected="true">Reservations</button>…</div>',
+      'type fixed = .swing_tabs_fixed · size s = .swing_tabs_s · .swing_tabs_flush = no side padding inside a padded container'],
     colGroups: [{ label: 'size', cols: ['l', 's'] }],
     rowGroups: [{ label: 'type', rows: ['flexible', 'fixed'] }],
     place: function (v) { return { cg: 0, c: v.size === 's' ? 1 : 0, rg: 0, r: v.type === 'fixed' ? 1 : 0 }; }
@@ -3422,8 +3616,8 @@ async function buildDividerPage(R, notes) {
   }
   function wire(set) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Monday, 03 January 2026');
-    Object.keys(parts).forEach(function (k) { parts[k].label.componentPropertyReferences = { characters: pL }; });
-    set.description = '<hr class="divider [divider--inset|divider--inset-avatar|divider--band]"> · <div class="divider divider--label [divider--label-start]" role="separator"><span>{label}</span></div> · <span class="divider divider--v"></span>. ' +
+    wireKeys(parts).forEach(function (k) { parts[k].label.componentPropertyReferences = { characters: pL }; });
+    set.description = '<hr class="swing_divider [swing_divider_inset|swing_divider_inset_avatar|swing_divider_band]"> · <div class="swing_divider swing_divider_label [swing_divider_label_start]" role="separator"><span>{label}</span></div> · <span class="swing_divider swing_divider_v"></span>. ' +
       'line = 1px --color-line · inset starts after a 20 icon + 12 gap (32) · insetAvatar after Avatar S + 12 (44) · band = 8px --color-band edge to edge · vertical = 1x16 between meta items. Space around it comes from the parent gap, never the divider.';
   }
   var set = await buildSet(page, 'Divider', variants, buildVariant, wire, function () {}, R);
@@ -3432,7 +3626,7 @@ async function buildDividerPage(R, notes) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Divider',
     description: 'A 1px line between items, a dated separator for feeds and chat, an 8px band between big sections, or a short vertical line between meta items.',
-    code: ['<hr class="divider">', 'type inset = .divider--inset · insetAvatar = .divider--inset-avatar · label = .divider--label · labelStart = .divider--label-start · band = .divider--band · vertical = .divider--v'],
+    code: ['<hr class="swing_divider">', 'type inset = .swing_divider_inset · insetAvatar = .swing_divider_inset_avatar · label = .swing_divider_label · labelStart = .swing_divider_label_start · band = .swing_divider_band · vertical = .swing_divider_v'],
     colGroups: [{ label: 'example', cols: ['divider'] }],
     rowGroups: [{ label: 'type', rows: DIV_TYPES }],
     place: function (v) { return { cg: 0, c: 0, rg: 0, r: DIV_TYPES.indexOf(v.type) }; }
@@ -3446,7 +3640,7 @@ var AV_TYPES = ['initials', 'picture', 'guest'];
 
 async function buildAvatar(R, notes, page, icons) {
   var variants = [], parts = {};
-  Object.keys(AV_SIZES).forEach(function (sz) { AV_TYPES.forEach(function (t) { variants.push({ size: sz, type: t, name: 'size=' + sz + ', type=' + t }); }); });
+  wireKeys(AV_SIZES).forEach(function (sz) { AV_TYPES.forEach(function (t) { variants.push({ size: sz, type: t, name: 'size=' + sz + ', type=' + t }); }); });
   async function buildVariant(comp, v) {
     var d = AV_SIZES[v.size], pad = v.size === 'xs' ? 0 : 8;
     comp.layoutMode = 'HORIZONTAL';
@@ -3480,8 +3674,8 @@ async function buildAvatar(R, notes, page, icons) {
   }
   function wire(set) {
     var pI = ensureProp(set, 'initials', 'TEXT', 'GH');
-    Object.keys(parts).forEach(function (k) { parts[k].initials.componentPropertyReferences = { characters: pI }; });
-    set.description = '<span class="avatar avatar--{size} [avatar--guest]">{initials}<img …></span>. size xs 16 (Label Small) · s 32 · m 48 (default, Label Large) · l 96 (H2). ' +
+    wireKeys(parts).forEach(function (k) { parts[k].initials.componentPropertyReferences = { characters: pI }; });
+    set.description = '<span class="swing_avatar swing_avatar_{size} [swing_avatar_guest]">{initials}<img …></span>. size xs 16 (Label Small) · s 32 · m 48 (default, Label Large) · l 96 (H2). ' +
       'initials = dark-500 + white · picture = photo over the initials (replace the photo layer\'s image fill) · guest = light-300 + person icon dark-100. Always a circle.';
   }
   var set = await buildSet(page, 'Avatar', variants, buildVariant, wire, function () {}, R);
@@ -3489,7 +3683,7 @@ async function buildAvatar(R, notes, page, icons) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Avatar',
     description: 'A person: initials on dark, their photo, or the guest icon when there is neither. Four sizes; m is the default.',
-    code: ['<span class="avatar">GH</span> · <span class="avatar avatar--s">GH<img src="…" alt=""></span> · <span class="avatar avatar--guest"><svg …></svg></span>', 'size xs / s / m / l = .avatar--xs / --s / --m / --l · type guest = .avatar--guest'],
+    code: ['<span class="swing_avatar">GH</span> · <span class="swing_avatar swing_avatar_s">GH<img src="…" alt=""></span> · <span class="swing_avatar swing_avatar_guest"><svg …></svg></span>', 'size xs / s / m / l = .swing_avatar_xs / --s / --m / --l · type guest = .swing_avatar_guest'],
     colGroups: [{ label: 'type', cols: AV_TYPES }],
     rowGroups: [{ label: 'size', rows: Object.keys(AV_SIZES) }],
     place: function (v) { return { cg: 0, c: AV_TYPES.indexOf(v.type), rg: 0, r: Object.keys(AV_SIZES).indexOf(v.size) }; }
@@ -3527,8 +3721,8 @@ async function buildAvatarGroup(R, notes, page, av) {
   function wire(set) {
     var pS = ensureProp(set, 'showLabel', 'BOOLEAN', true);
     var pL = ensureProp(set, 'label', 'TEXT', '+8 joined');
-    Object.keys(parts).forEach(function (k) { parts[k].label.componentPropertyReferences = { visible: pS, characters: pL }; });
-    set.description = '<div class="avatar-group [avatar-group--s|--xs]"><div class="avatar-group__stack">…avatar…</div><span class="avatar-group__label">{label}</span></div>. Up to 4 avatars, each with a ring in --color-bg. ' +
+    wireKeys(parts).forEach(function (k) { parts[k].label.componentPropertyReferences = { visible: pS, characters: pL }; });
+    set.description = '<div class="swing_avatar_group [swing_avatar_group_s|--xs]"><div class="swing_avatar_group__stack">…avatar…</div><span class="swing_avatar_group__label">{label}</span></div>. Up to 4 avatars, each with a ring in --color-bg. ' +
       'size l = Avatar m 48, overlap 16, B1 Semibold · s = Avatar s 32, overlap 8, B2 Semibold · xs = Avatar xs 16, overlap 4, ring 1, B3 Semibold. Hide or swap avatars in the stack.';
   }
   var set = await buildSet(page, 'AvatarGroup', variants, buildVariant, wire, function () {}, R);
@@ -3536,7 +3730,7 @@ async function buildAvatarGroup(R, notes, page, av) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'AvatarGroup',
     description: 'Who is in a flight or a community: up to four overlapping avatars and a count.',
-    code: ['<div class="avatar-group"><div class="avatar-group__stack"><span class="avatar">GH</span>…</div><span class="avatar-group__label">+8 joined</span></div>', 'size s = .avatar-group--s · xs = .avatar-group--xs'],
+    code: ['<div class="swing_avatar_group"><div class="swing_avatar_group__stack"><span class="swing_avatar">GH</span>…</div><span class="swing_avatar_group__label">+8 joined</span></div>', 'size s = .swing_avatar_group_s · xs = .swing_avatar_group_xs'],
     colGroups: [{ label: 'example', cols: ['group'] }],
     rowGroups: [{ label: 'size', rows: ['l', 's', 'xs'] }],
     place: function (v) { return { cg: 0, c: 0, rg: 0, r: ['l', 's', 'xs'].indexOf(v.size) }; }
@@ -3561,7 +3755,7 @@ async function buildCaptionPage(R, notes) {
   var icons = { neutral: await iconOrPlaceholder('Icon/Line/info', page, notes), error: await solidOr('warning-circle'),
     warning: await iconOrPlaceholder('Icon/Line/warning-circle', page, notes), success: await solidOr('tick-circle') };
   var variants = [], parts = {};
-  Object.keys(CAP_TONES).forEach(function (t) { ['m', 's'].forEach(function (sz) { variants.push({ tone: t, size: sz, name: 'tone=' + t + ', size=' + sz }); }); });
+  wireKeys(CAP_TONES).forEach(function (t) { ['m', 's'].forEach(function (sz) { variants.push({ tone: t, size: sz, name: 'tone=' + t + ', size=' + sz }); }); });
   var TEXT = { neutral: 'Free cancellation until 24 hours before', error: 'Pick a payment method', warning: 'Only 2 slots left', success: 'Booking confirmed' };
   async function buildVariant(comp, v) {
     var fg = CAP_TONES[v.tone][0], s = v.size === 's';
@@ -3583,8 +3777,8 @@ async function buildCaptionPage(R, notes) {
   }
   function wire(set) {
     var pT = ensureProp(set, 'text', 'TEXT', 'Free cancellation until 24 hours before');
-    Object.keys(parts).forEach(function (k) { parts[k].text.componentPropertyReferences = { characters: pT }; });
-    set.description = '<p class="caption [caption--error|--warning|--success] [caption--s]"><i class="icon" …></i>{text}</p>. One short line under a control or in a card; the icon keeps the meaning from being colour-only. ' +
+    wireKeys(parts).forEach(function (k) { parts[k].text.componentPropertyReferences = { characters: pT }; });
+    set.description = '<p class="swing_caption [swing_caption_error|--warning|--success] [swing_caption_s]"><i class="swing_icon" …></i>{text}</p>. One short line under a control or in a card; the icon keeps the meaning from being colour-only. ' +
       'neutral = dark-300 + line/info · error = red-500 + solid/warning-circle · warning = orange-700 + line/warning-circle · success = green-500 (--color-success) + solid/tick-circle. size m = B2 + icon 16 · s = B3 + icon 12. Link with aria-describedby.';
   }
   var set = await buildSet(page, 'Caption', variants, buildVariant, wire, function () {}, R);
@@ -3593,7 +3787,7 @@ async function buildCaptionPage(R, notes) {
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Caption',
     description: 'A short status line with an icon: under a control, inside a card, next to a price. Inside a TextField the help line is the same thing.',
-    code: ['<p class="caption caption--error" id="pay-err"><i class="icon" style="--icon:url(…/solid/warning-circle.svg)"></i>Pick a payment method</p>', 'tone = .caption--error / --warning / --success · size s = .caption--s'],
+    code: ['<p class="swing_caption swing_caption_error" id="pay-err"><i class="swing_icon" style="--icon:url(…/solid/warning-circle.svg)"></i>Pick a payment method</p>', 'tone = .swing_caption_error / --warning / --success · size s = .swing_caption_s'],
     colGroups: [{ label: 'size', cols: ['m', 's'] }],
     rowGroups: [{ label: 'tone', rows: TONES }],
     place: function (v) { return { cg: 0, c: v.size === 's' ? 1 : 0, rg: 0, r: TONES.indexOf(v.tone) }; }
@@ -3616,11 +3810,11 @@ async function buildPaginationPage(R, notes) {
     pillRadius(comp, d);
     comp.fills = paintFor(R, m ? '--light-100' : on ? '--purple-500' : '--dark-100');
     if (m && !on) comp.opacity = 0.48;
-  }, function (set) { set.description = '<i class="dot [is-active]"></i> inside .dots. Off 4px dark-100 · active 8px purple-500 · onMedia (inside .dots--on-media) = white, off dots at 48%. An indicator, never a tap target.'; }, function () {}, R);
+  }, function (set) { set.description = '<i class="swing_dot [is-active]"></i> inside .swing_dots. Off 4px dark-100 · active 8px purple-500 · onMedia (inside .swing_dots_on_media) = white, off dots at 48%. An indicator, never a tap target.'; }, function () {}, R);
   var pd = pairUp(dot, dv, function (c) { return /^active=/.test(c.name); });
   await docArtboard(R, page, dot, pd.comps, pd.vs, {
     title: 'Dot', description: 'One page dot. The active page is bigger and purple.',
-    code: ['<i class="dot is-active"></i>', 'active = .is-active · onMedia = inside .dots--on-media'],
+    code: ['<i class="swing_dot is-active"></i>', 'active = .is-active · onMedia = inside .swing_dots_on_media'],
     colGroups: [{ label: 'active', cols: ['false', 'true'] }], rowGroups: [{ label: 'onMedia', rows: ['false', 'true'] }],
     place: function (v) { return { cg: 0, c: v.active === 'true' ? 1 : 0, rg: 0, r: v.onMedia === 'true' ? 1 : 0 }; },
     minCell: 80, minRow: 40, center: true,
@@ -3637,11 +3831,11 @@ async function buildPaginationPage(R, notes) {
     bindNumber(R, comp, 'itemSpacing', '--gap-related', 8);
     comp.fills = [];
     for (var i = 0; i < +v.pages; i++) comp.appendChild(D['active=' + (i === 1) + ', onMedia=' + v.onMedia].createInstance());
-  }, function (set) { set.description = '<div class="dots [dots--on-media]" role="img" aria-label="Page 2 of 5">…dot…</div>. Gap 8, centred. Swap which Dot is active in the instance. More than 9 pages: use DotsCount.'; }, function () {}, R);
+  }, function (set) { set.description = '<div class="swing_dots [swing_dots_on_media]" role="img" aria-label="Page 2 of 5">…dot…</div>. Gap 8, centred. Swap which Dot is active in the instance. More than 9 pages: use DotsCount.'; }, function () {}, R);
   var pds = pairUp(dots, dsv, function (c) { return /^pages=/.test(c.name); });
   await docArtboard(R, page, dots, pds.comps, pds.vs, {
     title: 'Dots', description: 'Page dots for swipeable pages: onboarding, photo pagers. Over a photo use onMedia.',
-    code: ['<div class="dots" role="img" aria-label="Page 2 of 5"><i class="dot"></i><i class="dot is-active"></i>…</div>', 'onMedia = .dots--on-media'],
+    code: ['<div class="swing_dots" role="img" aria-label="Page 2 of 5"><i class="swing_dot"></i><i class="swing_dot is-active"></i>…</div>', 'onMedia = .swing_dots_on_media'],
     colGroups: [{ label: 'pages', cols: ['3', '5'] }], rowGroups: [{ label: 'onMedia', rows: ['false', 'true'] }],
     place: function (v) { return { cg: 0, c: v.pages === '5' ? 1 : 0, rg: 0, r: v.onMedia === 'true' ? 1 : 0 }; },
     minCell: 120, minRow: 40, center: true,
@@ -3656,13 +3850,13 @@ async function buildPaginationPage(R, notes) {
     cParts[comp.name] = t;
   }, function (set) {
     var p = ensureProp(set, 'count', 'TEXT', '3 / 12');
-    Object.keys(cParts).forEach(function (k) { cParts[k].componentPropertyReferences = { characters: p }; });
-    set.description = '<div class="dots-count">3 / 12</div>. B3 Semibold dark-300, tabular numbers. Use instead of dots past 9 pages.';
+    wireKeys(cParts).forEach(function (k) { cParts[k].componentPropertyReferences = { characters: p }; });
+    set.description = '<div class="swing_dots_count">3 / 12</div>. B3 Semibold dark-300, tabular numbers. Use instead of dots past 9 pages.';
   }, function () {}, R);
   var pc = pairUp(cnt, cv, function (c) { return c.name === 'type=default'; });
   await docArtboard(R, page, cnt, pc.comps, pc.vs, {
     title: 'DotsCount', description: 'Page count for more than 9 pages.',
-    code: ['<div class="dots-count">3 / 12</div>', 'B3 Semibold, tabular numbers'],
+    code: ['<div class="swing_dots_count">3 / 12</div>', 'B3 Semibold, tabular numbers'],
     colGroups: [{ label: 'example', cols: ['count'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -3681,11 +3875,11 @@ async function buildPaginationPage(R, notes) {
       if (m) p = p.map(function (x) { return Object.assign({}, x, { opacity: 0.4 }); });   // color-mix(light-100 40%, transparent)
       comp.fills = p;
     }
-  }, function (set) { set.description = '<i class="seg [is-done|is-current]"></i> inside .segments. 4px pill. todo = light-500 · done / current = purple-500 (current fills over 5s in a story) · onMedia = white, todo at 40%. Set the instance to Fill.'; }, function () {}, R);
+  }, function (set) { set.description = '<i class="swing_seg [is-done|is-current]"></i> inside .swing_segments. 4px pill. todo = light-500 · done / current = purple-500 (current fills over 5s in a story) · onMedia = white, todo at 40%. Set the instance to Fill.'; }, function () {}, R);
   var ps = pairUp(seg, sv, function (c) { return /^state=/.test(c.name); });
   await docArtboard(R, page, seg, ps.comps, ps.vs, {
     title: 'Segment', description: 'One step of a segmented progress bar.',
-    code: ['<i class="seg is-current"></i>', 'state done = .is-done · current = .is-current · onMedia = inside .segments--on-media'],
+    code: ['<i class="swing_seg is-current"></i>', 'state done = .is-done · current = .is-current · onMedia = inside .swing_segments_on_media'],
     colGroups: [{ label: 'onMedia', cols: ['false', 'true'] }], rowGroups: [{ label: 'state', rows: SEG }],
     place: function (v) { return { cg: 0, c: v.onMedia === 'true' ? 1 : 0, rg: 0, r: SEG.indexOf(v.state) }; },
     minCell: 120, minRow: 32, center: true,
@@ -3702,11 +3896,11 @@ async function buildPaginationPage(R, notes) {
       var it = S['state=' + st + ', onMedia=' + v.onMedia].createInstance();
       comp.appendChild(it); it.layoutSizingHorizontal = 'FILL';
     });
-  }, function (set) { set.description = '<div class="segments [segments--on-media]" role="progressbar" aria-valuemin="1" aria-valuemax="4" aria-valuenow="2">…seg…</div>. Equal segments, gap 4, width 342 (set to Fill). Add or remove Segment instances for more steps.'; }, function () {}, R);
+  }, function (set) { set.description = '<div class="swing_segments [swing_segments_on_media]" role="progressbar" aria-valuemin="1" aria-valuemax="4" aria-valuenow="2">…seg…</div>. Equal segments, gap 4, width 342 (set to Fill). Add or remove Segment instances for more steps.'; }, function () {}, R);
   var pss = pairUp(segs, ssv, function (c) { return /^onMedia=/.test(c.name); });
   await docArtboard(R, page, segs, pss.comps, pss.vs, {
     title: 'Segments', description: 'Progress through steps or stories: done and current are filled, the rest wait.',
-    code: ['<div class="segments" role="progressbar" aria-valuemin="1" aria-valuemax="4" aria-valuenow="2"><i class="seg is-done"></i><i class="seg is-current"></i><i class="seg"></i><i class="seg"></i></div>', 'onMedia = .segments--on-media'],
+    code: ['<div class="swing_segments" role="progressbar" aria-valuemin="1" aria-valuemax="4" aria-valuenow="2"><i class="swing_seg is-done"></i><i class="swing_seg is-current"></i><i class="swing_seg"></i><i class="swing_seg"></i></div>', 'onMedia = .swing_segments_on_media'],
     colGroups: [{ label: 'example', cols: ['4 steps'] }], rowGroups: [{ label: 'onMedia', rows: ['false', 'true'] }],
     place: function (v) { return { cg: 0, c: 0, rg: 0, r: v.onMedia === 'true' ? 1 : 0 }; },
     backdrop: function (v) { return v.onMedia === 'true' ? '--dark-500' : null; }
@@ -3740,11 +3934,11 @@ async function buildRatingPage(R, notes) {
       half.name = 'half'; half.resize(d / 2, d); half.fills = []; half.clipsContent = true;
       starNode(half, d, '--orange-500');
     }
-  }, function (set) { set.description = '<i class="star [is-on|is-half]"></i> (mask: solid/stars). off = dark-100 · on = orange-500 · half = left half orange. size s = 16 · m = 24 (.stars--m).'; }, function () {}, R);
+  }, function (set) { set.description = '<i class="swing_star [is-on|is-half]"></i> (mask: solid/stars). off = dark-100 · on = orange-500 · half = left half orange. size s = 16 · m = 24 (.swing_stars_m).'; }, function () {}, R);
   var pst = pairUp(star, sv, function (c) { return /^state=/.test(c.name); });
   await docArtboard(R, page, star, pst.comps, pst.vs, {
     title: 'Star', description: 'One star of a read-only score.',
-    code: ['<i class="star is-on"></i>', 'state on = .is-on · half = .is-half · size m = inside .stars--m'],
+    code: ['<i class="swing_star is-on"></i>', 'state on = .is-on · half = .is-half · size m = inside .swing_stars_m'],
     colGroups: [{ label: 'size', cols: ['s', 'm'] }], rowGroups: [{ label: 'state', rows: STATES }],
     place: function (v) { return { cg: 0, c: v.size === 'm' ? 1 : 0, rg: 0, r: STATES.indexOf(v.state) }; }
   });
@@ -3764,11 +3958,11 @@ async function buildRatingPage(R, notes) {
       var st = n >= i ? 'on' : n >= i - 0.5 ? 'half' : 'off';
       comp.appendChild(ST['state=' + st + ', size=' + v.size].createInstance());
     }
-  }, function (set) { set.description = '<span class="stars [stars--m]" role="img" aria-label="Rated 4.5 out of 5">…5 star…</span>. Read-only. size s = 16, gap 4 · m = 24, gap 8. Always show the number next to it (Rating).'; }, function () {}, R);
+  }, function (set) { set.description = '<span class="swing_stars [swing_stars_m]" role="img" aria-label="Rated 4.5 out of 5">…5 star…</span>. Read-only. size s = 16, gap 4 · m = 24, gap 8. Always show the number next to it (Rating).'; }, function () {}, R);
   var psv = pairUp(stars, stv, function (c) { return /^size=/.test(c.name); });
   await docArtboard(R, page, stars, psv.comps, psv.vs, {
     title: 'Stars', description: 'A read-only score from 0 to 5 in half steps. Pair it with the number so the score is not colour-only.',
-    code: ['<span class="stars" role="img" aria-label="Rated 4.5 out of 5"><i class="star is-on"></i>…<i class="star is-half"></i></span>', 'size m = .stars--m'],
+    code: ['<span class="swing_stars" role="img" aria-label="Rated 4.5 out of 5"><i class="swing_star is-on"></i>…<i class="swing_star is-half"></i></span>', 'size m = .swing_stars_m'],
     colGroups: [{ label: 'size', cols: ['s', 'm'] }], rowGroups: [{ label: 'value', rows: VALUES }],
     place: function (v) { return { cg: 0, c: v.size === 'm' ? 1 : 0, rg: 0, r: VALUES.indexOf(v.value) }; }
   });
@@ -3788,13 +3982,13 @@ async function buildRatingPage(R, notes) {
     rParts[comp.name] = { score: b, count: c };
   }, function (set) {
     var pS = ensureProp(set, 'score', 'TEXT', '4.5'), pSC = ensureProp(set, 'showCount', 'BOOLEAN', true), pC = ensureProp(set, 'count', 'TEXT', '(128)');
-    Object.keys(rParts).forEach(function (k) { rParts[k].score.componentPropertyReferences = { characters: pS }; rParts[k].count.componentPropertyReferences = { visible: pSC, characters: pC }; });
-    set.description = '<span class="rating"><span class="stars">…</span><b>4.5</b> (128)</span>. Gap 4, B2 dark-300, the score in B2 Semibold dark-500, tabular numbers. Swap the Stars value to match the score.';
+    wireKeys(rParts).forEach(function (k) { rParts[k].score.componentPropertyReferences = { characters: pS }; rParts[k].count.componentPropertyReferences = { visible: pSC, characters: pC }; });
+    set.description = '<span class="swing_rating"><span class="swing_stars">…</span><b>4.5</b> (128)</span>. Gap 4, B2 dark-300, the score in B2 Semibold dark-500, tabular numbers. Swap the Stars value to match the score.';
   }, function () {}, R);
   var pr = pairUp(rating, rv, function (c) { return c.name === 'type=default'; });
   await docArtboard(R, page, rating, pr.comps, pr.vs, {
     title: 'Rating', description: 'Stars with the score and the number of reviews, for course and coach cards.',
-    code: ['<span class="rating"><span class="stars" role="img" aria-label="Rated 4.5 out of 5">…</span><b>4.5</b> (128)</span>', 'score = <b> · count = the text after it'],
+    code: ['<span class="swing_rating"><span class="swing_stars" role="img" aria-label="Rated 4.5 out of 5">…</span><b>4.5</b> (128)</span>', 'score = <b> · count = the text after it'],
     colGroups: [{ label: 'example', cols: ['rating'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -3817,11 +4011,11 @@ async function buildRatingPage(R, notes) {
       var on = i <= +v.value;
       starNode(tap, l ? 40 : 24, off ? (on ? '--dark-100' : '--light-500') : (on ? '--orange-500' : '--dark-100'));
     }
-  }, function (set) { set.description = '<fieldset class="rate [rate--s]"><label class="rate__star"><input type="radio" name="r" value="1" class="sr-only">…</label>×5</fieldset>. Native radios. size l = icon 40 in a 48 tap, gap 8 · s = icon 24 in a 44 tap, gap 0. value = stars up to the checked one are orange-500. disabled = dark-100 on / light-500 off.'; }, function () {}, R);
+  }, function (set) { set.description = '<fieldset class="swing_rate [swing_rate_s]"><label class="swing_rate__star"><input type="radio" name="r" value="1" class="sr-only">…</label>×5</fieldset>. Native radios. size l = icon 40 in a 48 tap, gap 8 · s = icon 24 in a 44 tap, gap 0. value = stars up to the checked one are orange-500. disabled = dark-100 on / light-500 off.'; }, function () {}, R);
   var prt = pairUp(rate, rtv, function (c) { return /^size=/.test(c.name); });
   await docArtboard(R, page, rate, prt.comps, prt.vs, {
     title: 'Rate', description: 'Rating input: one tap sets the score. Big for a review screen, small inside a form.',
-    code: ['<fieldset class="rate"><legend class="sr-only">Rate the course</legend><label class="rate__star"><input type="radio" name="r" value="1" class="sr-only"><span class="sr-only">1 star</span></label>…</fieldset>', 'size s = .rate--s · disabled = <fieldset disabled>'],
+    code: ['<fieldset class="swing_rate"><legend class="sr-only">Rate the course</legend><label class="swing_rate__star"><input type="radio" name="r" value="1" class="sr-only"><span class="sr-only">1 star</span></label>…</fieldset>', 'size s = .swing_rate_s · disabled = <fieldset disabled>'],
     colGroups: [{ label: 'size l', cols: ['default', 'disabled'] }, { label: 'size s', cols: ['default', 'disabled'] }], rowGroups: [{ label: 'value', rows: RV }],
     place: function (v) { return { cg: v.size === 's' ? 1 : 0, c: v.state === 'disabled' ? 1 : 0, rg: 0, r: RV.indexOf(v.value) }; }
   });
@@ -3864,16 +4058,16 @@ async function buildStepperPage(R, notes) {
   }
   function wire(set) {
     var p = ensureProp(set, 'value', 'TEXT', '2');
-    Object.keys(parts).forEach(function (k) { parts[k].value.componentPropertyReferences = { characters: p }; });
-    set.description = '<div class="stepper" role="group" aria-label="Players" data-min="1" data-max="4"><button class="stepper__btn" data-step="-1">…minus-lg…</button><output class="stepper__value">{value}</output><button class="stepper__btn" data-step="1">…add-lg…</button></div>. ' +
+    wireKeys(parts).forEach(function (k) { parts[k].value.componentPropertyReferences = { characters: p }; });
+    set.description = '<div class="swing_stepper" role="group" aria-label="Players" data-min="1" data-max="4"><button class="swing_stepper__btn" data-step="-1">…minus-lg…</button><output class="swing_stepper__value">{value}</output><button class="swing_stepper__btn" data-step="1">…add-lg…</button></div>. ' +
       'Buttons 36 circle light-300 (44 hit area), icon 20 · pressed = light-500 · atMin / atMax = that button disabled (light-200, dark-100) · disabled = .is-disabled. Value B1 Semibold, min width 32. Over ~10 use a TextField.';
   }
   var set = await buildSet(page, 'Stepper', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Stepper', description: 'Small whole numbers: players in a flight, ball boxes, nights. The minus turns off at the minimum, the plus at the maximum.',
-    code: ['<div class="stepper" role="group" aria-label="Players" data-min="1" data-max="4"><button class="stepper__btn" type="button" data-step="-1" aria-label="Remove a player">…</button><output class="stepper__value" aria-live="polite">2</output>…</div>',
-      'atMin / atMax = stepper.js disables that button · disabled = .stepper.is-disabled · pressed = :active'],
+    code: ['<div class="swing_stepper" role="group" aria-label="Players" data-min="1" data-max="4"><button class="swing_stepper__btn" type="button" data-step="-1" aria-label="Remove a player">…</button><output class="swing_stepper__value" aria-live="polite">2</output>…</div>',
+      'atMin / atMax = stepper.js disables that button · disabled = .swing_stepper.is-disabled · pressed = :active'],
     colGroups: [{ label: 'example', cols: ['stepper'] }], rowGroups: [{ label: 'state', rows: STP_STATES }],
     place: function (v) { return { cg: 0, c: 0, rg: 0, r: STP_STATES.indexOf(v.state) }; }
   });
@@ -3918,13 +4112,13 @@ async function buildPinPage(R, notes) {
     }
   }, function (set) {
     var p = ensureProp(set, 'digit', 'TEXT', '4');
-    Object.keys(cParts).forEach(function (k) { cParts[k].componentPropertyReferences = { characters: p }; });
-    set.description = '<div class="pin__cell [is-active] [is-filled]">{digit}</div>, drawn by pin.js. 48 x 56, radius 12, Text field colours: default light-200 + 1px light-500 · active light-100 + 2px purple-500 · error red-50 + red-500 (active 2px) · disabled light-300. Digit H4, mask dot 12.';
+    wireKeys(cParts).forEach(function (k) { cParts[k].componentPropertyReferences = { characters: p }; });
+    set.description = '<div class="swing_pin__cell [is-active] [is-filled]">{digit}</div>, drawn by pin.js. 48 x 56, radius 12, Text field colours: default light-200 + 1px light-500 · active light-100 + 2px purple-500 · error red-50 + red-500 (active 2px) · disabled light-300. Digit H4, mask dot 12.';
   }, function () {}, R);
   var pc = pairUp(cell, cv, function (c) { return /^state=/.test(c.name); });
   await docArtboard(R, page, cell, pc.comps, pc.vs, {
     title: 'PinCell', description: 'One digit box of a PIN or OTP field.',
-    code: ['<div class="pin__cell is-active"></div>', 'active = .is-active · filled = .is-filled · dot = inside .pin--mask · error = .pin.is-error'],
+    code: ['<div class="swing_pin__cell is-active"></div>', 'active = .is-active · filled = .is-filled · dot = inside .swing_pin_mask · error = .swing_pin.is-error'],
     colGroups: [{ label: 'content', cols: PIN_CONTENT }], rowGroups: [{ label: 'state', rows: PIN_CELL_STATES }],
     place: function (v) { return { cg: 0, c: PIN_CONTENT.indexOf(v.content), rg: 0, r: PIN_CELL_STATES.indexOf(v.state) }; }
   });
@@ -3979,7 +4173,7 @@ async function buildPinPage(R, notes) {
     var pH = ensureProp(set, 'helpText', 'TEXT', 'We sent a 6-digit code to +62 812 3456 7890');
     var pSF = ensureProp(set, 'showFoot', 'BOOLEAN', true);
     var pF = ensureProp(set, 'foot', 'TEXT', 'Resend code in 0:42');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.help.componentPropertyReferences = { visible: pSH };
@@ -3987,14 +4181,14 @@ async function buildPinPage(R, notes) {
       p.foot.componentPropertyReferences = { visible: pSF };
       p.footText.componentPropertyReferences = { characters: pF };
     });
-    set.description = '<div class="field pin [pin--mask] [is-error]"><label class="pin__label">{label}</label><div class="pin__box"><input class="pin__input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"><div class="pin__cells"></div></div><p class="field__help">{helpText}</p></div>. ' +
-      'One real input under 6 PinCells (gap 8). typing = :focus-within, label purple-600, next cell active · error = .is-error · disabled = input disabled · mask = .pin--mask (payment PIN, dots). foot = .pin__foot (resend timer).';
+    set.description = '<div class="swing_field swing_pin [swing_pin_mask] [is-error]"><label class="swing_pin__label">{label}</label><div class="swing_pin__box"><input class="swing_pin__input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"><div class="swing_pin__cells"></div></div><p class="swing_field__help">{helpText}</p></div>. ' +
+      'One real input under 6 PinCells (gap 8). typing = :focus-within, label purple-600, next cell active · error = .is-error · disabled = input disabled · mask = .swing_pin_mask (payment PIN, dots). foot = .swing_pin__foot (resend timer).';
   }, function () {}, R);
   var pp = pairUp(pin, pv, function (c) { return parts[c.name]; });
   await docArtboard(R, page, pin, pp.comps, pp.vs, {
     title: 'Pin', description: 'OTP or payment PIN: six cells over one real input, so SMS autofill and paste work. mask shows dots instead of digits.',
-    code: ['<div class="field pin"><label class="pin__label" for="otp">Verification code</label><div class="pin__box"><input class="pin__input" id="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"><div class="pin__cells" aria-hidden="true"></div></div><p class="field__help" id="otp-help">…</p></div>',
-      'mask = .pin--mask · error = .pin.is-error · typing = focused · disabled = <input disabled>'],
+    code: ['<div class="swing_field swing_pin"><label class="swing_pin__label" for="otp">Verification code</label><div class="swing_pin__box"><input class="swing_pin__input" id="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"><div class="swing_pin__cells" aria-hidden="true"></div></div><p class="swing_field__help" id="otp-help">…</p></div>',
+      'mask = .swing_pin_mask · error = .swing_pin.is-error · typing = focused · disabled = <input disabled>'],
     colGroups: [{ label: 'mask', cols: ['false · OTP', 'true · payment PIN'] }], rowGroups: [{ label: 'state', rows: PIN_STATES }],
     place: function (v) { return { cg: 0, c: v.mask === 'true' ? 1 : 0, rg: 0, r: PIN_STATES.indexOf(v.state) }; }
   });
@@ -4082,7 +4276,7 @@ async function buildSliderPage(R, notes) {
     var pS = ensureProp(set, 'showScale', 'BOOLEAN', true);
     var pMn = ensureProp(set, 'min', 'TEXT', '1 km');
     var pMx = ensureProp(set, 'max', 'TEXT', '50 km');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       p.value.componentPropertyReferences = { characters: pV };
@@ -4090,15 +4284,15 @@ async function buildSliderPage(R, notes) {
       p.min.componentPropertyReferences = { characters: pMn };
       p.max.componentPropertyReferences = { characters: pMx };
     });
-    set.description = '<div class="slider [slider--range]"><div class="slider__head"><label class="slider__label">{label}</label><output class="slider__value">{value}</output></div><div class="slider__control"><input type="range" class="slider__input">…</div><div class="slider__scale"><span>{min}</span><span>{max}</span></div></div>. ' +
+    set.description = '<div class="swing_slider [swing_slider_range]"><div class="swing_slider__head"><label class="swing_slider__label">{label}</label><output class="swing_slider__value">{value}</output></div><div class="swing_slider__control"><input type="range" class="swing_slider__input">…</div><div class="swing_slider__scale"><span>{min}</span><span>{max}</span></div></div>. ' +
       'Track 4px light-500, fill purple-500, thumb 24 (purple-500 + 2px light-100 ring, 44 hit area). pressed = purple-600 thumb + value bubble (dark-400, B2 Semibold, Elevation 2) · disabled = dark-100. Move the thumb and resize the fill to set the value. Width 342: set to Fill.';
   }
   var set = await buildSet(page, 'Slider', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Slider', description: 'Pick a value or a range by dragging: distance, price, handicap. The value shows in the head, and in a bubble while dragging.',
-    code: ['<div class="slider" data-format="km"><div class="slider__head"><label class="slider__label" for="dist">Distance</label><output class="slider__value"></output></div><div class="slider__control"><input type="range" class="slider__input" id="dist" min="1" max="50" value="10"></div><div class="slider__scale"><span>1 km</span><span>50 km</span></div></div>',
-      'type range = .slider--range with two inputs · pressed = :active (slider.js shows .slider__bubble) · disabled = <input disabled>'],
+    code: ['<div class="swing_slider" data-format="km"><div class="swing_slider__head"><label class="swing_slider__label" for="dist">Distance</label><output class="swing_slider__value"></output></div><div class="swing_slider__control"><input type="range" class="swing_slider__input" id="dist" min="1" max="50" value="10"></div><div class="swing_slider__scale"><span>1 km</span><span>50 km</span></div></div>',
+      'type range = .swing_slider_range with two inputs · pressed = :active (slider.js shows .swing_slider__bubble) · disabled = <input disabled>'],
     colGroups: [{ label: 'type', cols: ['single', 'range'] }], rowGroups: [{ label: 'state', rows: SL_STATES }],
     place: function (v) { return { cg: 0, c: v.type === 'range' ? 1 : 0, rg: 0, r: SL_STATES.indexOf(v.state) }; }
   });
@@ -4180,7 +4374,7 @@ async function buildToasterPage(R, notes) {
     var pSA = ensureProp(set, 'showAction', 'BOOLEAN', false);
     var pA = ensureProp(set, 'action', 'TEXT', 'View');
     var pSC = ensureProp(set, 'showClose', 'BOOLEAN', false);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.text.componentPropertyReferences = { characters: pT };
       p.icon.componentPropertyReferences = { visible: pSI };
@@ -4188,14 +4382,14 @@ async function buildToasterPage(R, notes) {
       p.actText.componentPropertyReferences = { characters: pA };
       p.close.componentPropertyReferences = { visible: pSC };
     });
-    set.description = '<div class="toaster toaster--{tone}" role="status"><i class="icon toaster__icon"></i><p class="toaster__text">{text}</p><button class="toaster__action">{action}<i class="icon">chevron-right</i></button><button class="toaster__close" aria-label="Dismiss">close-sm</button></div>. ' +
+    set.description = '<div class="swing_toaster swing_toaster_{tone}" role="status"><i class="swing_icon swing_toaster__icon"></i><p class="swing_toaster__text">{text}</p><button class="swing_toaster__action">{action}<i class="swing_icon">chevron-right</i></button><button class="swing_toaster__close" aria-label="Dismiss">close-sm</button></div>. ' +
       'Solid fill, white B2 Semibold, icon 20, padding 12/16, gap 12, radius 8, Elevation 2, min 48. neutral dark-300 · error red-500 · warning orange-700 · success green-500 (--color-success) · primary purple-500. Floats 16 above the bottom bar, full width minus page-x (max 480).';
   }
   var set = await buildSet(page, 'Toaster', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Toaster', description: 'Short feedback after an action. It floats above the bottom bar and goes away on its own; add an action or a close for the ones that matter.',
-    code: ['<div class="toaster toaster--success" role="status"><i class="icon toaster__icon" …solid/tick-circle></i><p class="toaster__text">Booking confirmed</p></div>', 'tone = .toaster--error / --warning / --success / --primary · showAction = .toaster__action · showClose = .toaster__close'],
+    code: ['<div class="swing_toaster swing_toaster_success" role="status"><i class="swing_icon swing_toaster__icon" …solid/tick-circle></i><p class="swing_toaster__text">Booking confirmed</p></div>', 'tone = .swing_toaster_error / --warning / --success / --primary · showAction = .swing_toaster__action · showClose = .swing_toaster__close'],
     colGroups: [{ label: 'example', cols: ['toaster'] }], rowGroups: [{ label: 'tone', rows: TONES }],
     place: function (v) { return { cg: 0, c: 0, rg: 0, r: TONES.indexOf(v.tone) }; },
     examples: [{ label: 'with action and close', items: [{ variant: 'tone=success', props: { showAction: true, showClose: true } }, { variant: 'tone=error', props: { showAction: true, action: 'Retry' } }] }]
@@ -4241,16 +4435,16 @@ async function buildTooltipPage(R, notes) {
   }
   function wire(set) {
     var pT = ensureProp(set, 'text', 'TEXT', 'Covers payment processing and support.');
-    Object.keys(parts).forEach(function (k) { parts[k].text.componentPropertyReferences = { characters: pT }; });
-    set.description = '<span class="tip" data-placement="{placement}"><button class="tip__btn" aria-describedby="t1">…info 16…</button><span class="tooltip" id="t1" role="tooltip">{text}</span></span>. ' +
-      'dark-400, white B2 Semibold, padding 8/12, radius 8, max 240, Elevation 2, 8 away from the trigger with an 8px pointer. dismiss = coach mark (.tooltip--dismiss + .tooltip__close 32, stays until closed). Opens on tap on phones.';
+    wireKeys(parts).forEach(function (k) { parts[k].text.componentPropertyReferences = { characters: pT }; });
+    set.description = '<span class="swing_tip" data-placement="{placement}"><button class="swing_tip__btn" aria-describedby="t1">…info 16…</button><span class="swing_tooltip" id="t1" role="tooltip">{text}</span></span>. ' +
+      'dark-400, white B2 Semibold, padding 8/12, radius 8, max 240, Elevation 2, 8 away from the trigger with an 8px pointer. dismiss = coach mark (.swing_tooltip_dismiss + .swing_tooltip__close 32, stays until closed). Opens on tap on phones.';
   }
   var set = await buildSet(page, 'Tooltip', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Tooltip', description: 'A short explanation next to what it explains. placement is where the bubble sits; the pointer faces the trigger. dismiss is a coach mark that stays until closed.',
-    code: ['<span class="tip" data-placement="top"><button class="tip__btn" type="button" aria-label="About the service fee" aria-describedby="t1">…</button><span class="tooltip" id="t1" role="tooltip">Covers payment processing and support.</span></span>',
-      'placement = data-placement · dismiss = .tooltip--dismiss + .tooltip__close · data-align="start|end" pins it to an edge'],
+    code: ['<span class="swing_tip" data-placement="top"><button class="swing_tip__btn" type="button" aria-label="About the service fee" aria-describedby="t1">…</button><span class="swing_tooltip" id="t1" role="tooltip">Covers payment processing and support.</span></span>',
+      'placement = data-placement · dismiss = .swing_tooltip_dismiss + .swing_tooltip__close · data-align="start|end" pins it to an edge'],
     colGroups: [{ label: 'dismiss', cols: ['false', 'true · coach mark'] }], rowGroups: [{ label: 'placement', rows: TT_PLACE }],
     place: function (v) { return { cg: 0, c: v.dismiss === 'true' ? 1 : 0, rg: 0, r: TT_PLACE.indexOf(v.placement) }; }
   });
@@ -4272,13 +4466,13 @@ async function buildTooltipPage(R, notes) {
     mParts[comp.name] = t;
   }, function (set) {
     var p = ensureProp(set, 'label', 'TEXT', 'Rp 850k');
-    Object.keys(mParts).forEach(function (k) { mParts[k].componentPropertyReferences = { characters: p }; });
-    set.description = '<button class="map-pin" aria-pressed="{selected}">{label}</button>. White label h32, padding 12, radius 8, purple-600 B2 Semibold, Elevation 1, 8px pointer. selected = dark-400 + white (scales to 1.08 on the web).';
+    wireKeys(mParts).forEach(function (k) { mParts[k].componentPropertyReferences = { characters: p }; });
+    set.description = '<button class="swing_map_pin" aria-pressed="{selected}">{label}</button>. White label h32, padding 12, radius 8, purple-600 B2 Semibold, Elevation 1, 8px pointer. selected = dark-400 + white (scales to 1.08 on the web).';
   }, function () {}, R);
   var pm = pairUp(pin, mv, function (c) { return mParts[c.name]; });
   await docArtboard(R, page, pin, pm.comps, pm.vs, {
     title: 'MapPin', description: 'A price or name label over the map. The selected one turns dark.',
-    code: ['<button class="map-pin" type="button" aria-pressed="false">Rp 850k</button>', 'selected = aria-pressed="true"'],
+    code: ['<button class="swing_map_pin" type="button" aria-pressed="false">Rp 850k</button>', 'selected = aria-pressed="true"'],
     colGroups: [{ label: 'selected', cols: ['false', 'true'] }], rowGroups: [{ label: 'example', rows: ['pin'] }],
     place: function (v) { return { cg: 0, c: v.selected === 'true' ? 1 : 0, rg: 0, r: 0 }; },
     backdrop: function () { return '--light-300'; }
@@ -4309,22 +4503,18 @@ var UI_PARTS = { PhotoTile: 'Screen / Home', PassUpsell: 'Screen / Home', Sectio
   RefRow: 'Screen / Track' };
 // Assets panel folders come from slash names: a UI component is "<screen>/<name>" (Home/ProductCard).
 function uiSetName(name) { return UI_PARTS[name] ? UI_PARTS[name].replace(/^Screen \/ /, '') + '/' + name : name; }
-function isUiSet(n, name) { return n.type === 'COMPONENT_SET' && (n.name === uiSetName(name) || n.name === name); }
+function isUiSet(n, name) { return n.type === 'COMPONENT_SET' && (setTag(n).logical === name || n.name === swingBase(uiSetName(name)) || n.name === uiSetName(name) || n.name === name); }
 async function setFrom(pageName, setName, buildPage, R, notes) {
   if (LIB && !UI_PARTS[setName]) return libSet(setName, pageName);
   pageName = UI_PARTS[setName] || pageName;
-  if (UI_PARTS[setName]) {
-    var up = await pageNamed(pageName);
-    var us = up.findOne(function (n) { return isUiSet(n, setName); });
-    if (us) return us;
-    await buildPage(R, notes);
-    return up.findOne(function (n) { return isUiSet(n, setName); });
-  }
   var pg = await pageNamed(pageName);
-  var set = pg.findOne(function (n) { return n.type === 'COMPONENT_SET' && n.name === setName; });
+  var alt = UI_PARTS[setName] ? uiSetName(setName) : null;
+  var set = findLogical(pg, setName, alt);
+  // a set built before the swing names (no tag): build its page once, which renames and splits it in place
+  if (set && !set.__split && !setTag(set).logical) { await buildPage(R, notes); set = findLogical(pg, setName, alt) || set; }
   if (set) return set;
   await buildPage(R, notes);
-  return pg.findOne(function (n) { return n.type === 'COMPONENT_SET' && n.name === setName; });
+  return findLogical(pg, setName, alt);
 }
 // setFrom, and the set must have this variant: a page built before the variant existed is rebuilt
 // (in place, instances stay linked). In library mode a missing variant means "publish again".
@@ -4398,7 +4588,7 @@ async function buildStepsPage(R, notes) {
     var pB = ensureProp(set, 'body', 'TEXT', 'Morning slots fill first on weekends');
     var pSM = ensureProp(set, 'showMeta', 'BOOLEAN', false);
     var pM = ensureProp(set, 'meta', 'TEXT', '2 min');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       if (p.number) p.number.componentPropertyReferences = { characters: pN };
       p.title.componentPropertyReferences = { characters: pT };
@@ -4406,14 +4596,14 @@ async function buildStepsPage(R, notes) {
       p.meta.componentPropertyReferences = { visible: pSM };
       p.metaText.componentPropertyReferences = { characters: pM };
     });
-    set.description = '<li class="step [is-done|is-current]"><span class="step__check"></span><span class="step__text"><span class="step__title">{title}</span><span class="step__body">{body}</span></span><span class="step__meta">{meta}</span></li> in <ol class="steps">. ' +
+    set.description = '<li class="swing_step [is-done|is-current]"><span class="swing_step__check"></span><span class="swing_step__text"><span class="swing_step__title">{title}</span><span class="swing_step__body">{body}</span></span><span class="swing_step__meta">{meta}</span></li> in <ol class="swing_steps">. ' +
       'Number (01, 02…) in a 32 circle, B2 Semibold, 2px connector to the next step. todo = light-300 / dark-300 · current = purple-500 / white, title purple-600 · done = green-50 + green-500 check, green-500 line. last = no line, no bottom padding.';
   }
   var set = await buildSet(page, 'Step', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Step', description: 'One step of a process: done ones get a green check, the current one is purple, the rest wait in grey.',
-    code: ['<li class="step is-current"><span class="step__text"><span class="step__title">Choose a tee time</span><span class="step__body">…</span></span></li>', 'state done = .is-done · current = .is-current · last = :last-child'],
+    code: ['<li class="swing_step is-current"><span class="swing_step__text"><span class="swing_step__title">Choose a tee time</span><span class="swing_step__body">…</span></span></li>', 'state done = .is-done · current = .is-current · last = :last-child'],
     colGroups: [{ label: 'last', cols: ['false', 'true'] }], rowGroups: [{ label: 'state', rows: STEP_STATES }],
     place: function (v) { return { cg: 0, c: v.last === 'true' ? 1 : 0, rg: 0, r: STEP_STATES.indexOf(v.state) }; }
   });
@@ -4428,11 +4618,11 @@ async function buildStepsPage(R, notes) {
       comp.appendChild(it); it.layoutSizingHorizontal = 'FILL';
       try { it.setProperties(propsFor(it, { number: s[2], title: s[3], body: s[4] })); } catch (e) { /* defaults */ }
     });
-  }, function (s) { s.description = '<ol class="steps">…step…</ol>. Step instances, the last one with last=true.'; }, function () {}, R);
+  }, function (s) { s.description = '<ol class="swing_steps">…step…</ol>. Step instances, the last one with last=true.'; }, function () {}, R);
   var ps = pairUp(steps, sv, function (c) { return c.name === 'type=default'; });
   await docArtboard(R, page, steps, ps.comps, ps.vs, {
     title: 'Steps', description: 'A booking or onboarding flow as a vertical list of steps.',
-    code: ['<ol class="steps"><li class="step is-done">…</li><li class="step is-current">…</li><li class="step">…</li></ol>', 'Step instances; the number comes from a CSS counter'],
+    code: ['<ol class="swing_steps"><li class="swing_step is-done">…</li><li class="swing_step is-current">…</li><li class="swing_step">…</li></ol>', 'Step instances; the number comes from a CSS counter'],
     colGroups: [{ label: 'example', cols: ['steps'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -4473,13 +4663,13 @@ async function buildReviewPage(R, notes) {
     rParts[comp.name] = { name: nm, date: dt, text: tx, line: divider(comp) };
   }, function (set) {
     var pN = ensureProp(set, 'name', 'TEXT', 'Ghais Ramadhan'), pD = ensureProp(set, 'date', 'TEXT', '2 days ago'), pT = ensureProp(set, 'text', 'TEXT', LONG), pL = ensureProp(set, 'showDivider', 'BOOLEAN', true);
-    Object.keys(rParts).forEach(function (k) { var p = rParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.date.componentPropertyReferences = { characters: pD }; p.text.componentPropertyReferences = { characters: pT }; p.line.componentPropertyReferences = { visible: pL }; });
-    set.description = '<article class="review [is-open]"><div class="review__by"><span class="avatar avatar--s">…</span><b>{name}</b>{date}</div><span class="stars stars--s">…</span><p class="review__text">{text}</p></article>. Padding 16 0, gap 8, line under (off on the last). Text B1, clamped to 3 lines until open. Stars 16 orange-500, off light-500.';
+    wireKeys(rParts).forEach(function (k) { var p = rParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.date.componentPropertyReferences = { characters: pD }; p.text.componentPropertyReferences = { characters: pT }; p.line.componentPropertyReferences = { visible: pL }; });
+    set.description = '<article class="swing_review [is-open]"><div class="swing_review__by"><span class="swing_avatar swing_avatar_s">…</span><b>{name}</b>{date}</div><span class="swing_stars swing_stars_s">…</span><p class="swing_review__text">{text}</p></article>. Padding 16 0, gap 8, line under (off on the last). Text B1, clamped to 3 lines until open. Stars 16 orange-500, off light-500.';
   }, function () {}, R);
   var pr = pairUp(review, rv, function (c) { return rParts[c.name]; });
   await docArtboard(R, page, review, pr.comps, pr.vs, {
     title: 'Review', description: 'A course or coach review: who, when, the score, then the text clamped to three lines until opened.',
-    code: ['<article class="review"><div class="review__by"><span class="avatar avatar--s">GR</span><b>Ghais Ramadhan</b> 2 days ago</div><span class="stars stars--s">…</span><p class="review__text">…</p></article>', 'open = .is-open (no clamp) · showDivider off on the last one'],
+    code: ['<article class="swing_review"><div class="swing_review__by"><span class="swing_avatar swing_avatar_s">GR</span><b>Ghais Ramadhan</b> 2 days ago</div><span class="swing_stars swing_stars_s">…</span><p class="swing_review__text">…</p></article>', 'open = .is-open (no clamp) · showDivider off on the last one'],
     colGroups: [{ label: 'open', cols: ['false · 3 lines', 'true'] }], rowGroups: [{ label: 'example', rows: ['review'] }],
     place: function (v) { return { cg: 0, c: v.open === 'true' ? 1 : 0, rg: 0, r: 0 }; }
   });
@@ -4512,13 +4702,13 @@ async function buildReviewPage(R, notes) {
   }, function (set) {
     var pN = ensureProp(set, 'name', 'TEXT', 'Ardi Pratama'), pTm = ensureProp(set, 'time', 'TEXT', '1h'), pT = ensureProp(set, 'text', 'TEXT', 'Count me in for Saturday. I can bring one more player.');
     var pA = ensureProp(set, 'showActions', 'BOOLEAN', true), pL = ensureProp(set, 'showDivider', 'BOOLEAN', true);
-    Object.keys(cParts).forEach(function (k) { var p = cParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.time.componentPropertyReferences = { characters: pTm }; p.text.componentPropertyReferences = { characters: pT }; p.acts.componentPropertyReferences = { visible: pA }; p.line.componentPropertyReferences = { visible: pL }; });
-    set.description = '<div class="comment"><span class="avatar avatar--s">…</span><div class="comment__main"><div class="comment__head"><span class="comment__name">{name}</span><span class="comment__time">{time}</span></div><p class="comment__text">{text}</p><div class="comment__acts">Reply · Like</div></div></div>. Padding 16 0, gap 12, line under.';
+    wireKeys(cParts).forEach(function (k) { var p = cParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.time.componentPropertyReferences = { characters: pTm }; p.text.componentPropertyReferences = { characters: pT }; p.acts.componentPropertyReferences = { visible: pA }; p.line.componentPropertyReferences = { visible: pL }; });
+    set.description = '<div class="swing_comment"><span class="swing_avatar swing_avatar_s">…</span><div class="swing_comment__main"><div class="swing_comment__head"><span class="swing_comment__name">{name}</span><span class="swing_comment__time">{time}</span></div><p class="swing_comment__text">{text}</p><div class="swing_comment__acts">Reply · Like</div></div></div>. Padding 16 0, gap 12, line under.';
   }, function () {}, R);
   var pc = pairUp(comment, cv, function (c) { return c.name === 'type=default'; });
   await docArtboard(R, page, comment, pc.comps, pc.vs, {
     title: 'Comment', description: 'A comment in a community post or game thread.',
-    code: ['<div class="comment"><span class="avatar avatar--s">AP</span><div class="comment__main"><div class="comment__head"><span class="comment__name">Ardi Pratama</span><span class="comment__time">1h</span></div><p class="comment__text">…</p><div class="comment__acts">…</div></div></div>', 'showActions = .comment__acts · showDivider off on the last one'],
+    code: ['<div class="swing_comment"><span class="swing_avatar swing_avatar_s">AP</span><div class="swing_comment__main"><div class="swing_comment__head"><span class="swing_comment__name">Ardi Pratama</span><span class="swing_comment__time">1h</span></div><p class="swing_comment__text">…</p><div class="swing_comment__acts">…</div></div></div>', 'showActions = .swing_comment__acts · showDivider off on the last one'],
     colGroups: [{ label: 'example', cols: ['comment'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -4561,14 +4751,14 @@ async function buildReviewPage(R, notes) {
   }, function (set) {
     var pN = ensureProp(set, 'name', 'TEXT', 'Sabtu pagi @ Pondok Indah'), pTm = ensureProp(set, 'time', 'TEXT', '09:41');
     var pB = ensureProp(set, 'body', 'TEXT', 'Ardi: Count me in, I can bring one more player for the back nine.'), pL = ensureProp(set, 'showDivider', 'BOOLEAN', true);
-    Object.keys(hParts).forEach(function (k) { var p = hParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.time.componentPropertyReferences = { characters: pTm }; p.body.componentPropertyReferences = { characters: pB }; p.line.componentPropertyReferences = { visible: pL }; });
-    set.description = '<a class="list-item list-item--standard chat-row [is-unread]"><span class="list-item__lead"><span class="avatar">…</span></span><span class="list-item__text"><span class="list-item__title"><span>{name}</span><span class="chat-row__time">{time}</span></span><span class="list-item__body">{body}</span></span><span class="chat-row__side">…counter…</span></a> in .list--inset-avatar-m. ' +
+    wireKeys(hParts).forEach(function (k) { var p = hParts[k]; p.name.componentPropertyReferences = { characters: pN }; p.time.componentPropertyReferences = { characters: pTm }; p.body.componentPropertyReferences = { characters: pB }; p.line.componentPropertyReferences = { visible: pL }; });
+    set.description = '<a class="swing_list_item swing_list_item_standard swing_chat_row [is-unread]"><span class="swing_list_item__lead"><span class="swing_avatar">…</span></span><span class="swing_list_item__text"><span class="swing_list_item__title"><span>{name}</span><span class="swing_chat_row__time">{time}</span></span><span class="swing_list_item__body">{body}</span></span><span class="swing_chat_row__side">…counter…</span></a> in .swing_list_inset_avatar_m. ' +
       'Avatar 48, name B1 Semibold (one line), time B3, body B2 clamped to 2 lines. unread = time purple-600 B3 Semibold, body dark-500, primary Counter.';
   }, function () {}, R);
   var ph = pairUp(chat, hv, function (c) { return hParts[c.name]; });
   await docArtboard(R, page, chat, ph.comps, ph.vs, {
     title: 'ChatRow', description: 'A conversation in the chat list. Unread ones show the time in purple and a count.',
-    code: ['<div class="list list--inset-avatar-m"><a class="list-item list-item--standard chat-row is-unread" href="#">…</a></div>', 'unread = .is-unread · the divider starts after the 48 avatar + 12'],
+    code: ['<div class="swing_list swing_list_inset_avatar_m"><a class="swing_list_item swing_list_item_standard swing_chat_row is-unread" href="#">…</a></div>', 'unread = .is-unread · the divider starts after the 48 avatar + 12'],
     colGroups: [{ label: 'unread', cols: ['false', 'true'] }], rowGroups: [{ label: 'example', rows: ['chat'] }],
     place: function (v) { return { cg: 0, c: v.unread === 'true' ? 1 : 0, rg: 0, r: 0 }; }
   });
@@ -4641,20 +4831,20 @@ async function buildBottomNavPage(R, notes) {
     var pL = ensureProp(set, 'label', 'TEXT', 'Home');
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', home.line.id);
     var pC = ensureProp(set, 'showCounter', 'BOOLEAN', false);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.label.componentPropertyReferences = { characters: pL };
       if (!/type=action/.test(k)) p.icon.componentPropertyReferences = { mainComponent: pI };
       if (p.counter) p.counter.componentPropertyReferences = { visible: pC };
     });
-    set.description = '<a class="bottom-nav__item [is-active]" aria-current="page"><span class="bottom-nav__icon"><i class="icon bottom-nav__line"></i><i class="icon bottom-nav__solid"></i></span><span class="bottom-nav__label">{label}</span></a>. ' +
-      'Min 52, padding 8/4/4, gap 4, icon 24, B3 Semibold dark-300. active = the SOLID icon in purple-500 + purple-600 label (swap icon to the solid one) · pressed = light-300 · action = 48 purple-500 circle pulled up 24, + icon, middle slot only. showCounter = .counter on the icon.';
+    set.description = '<a class="swing_bottom_nav__item [is-active]" aria-current="page"><span class="swing_bottom_nav__icon"><i class="swing_icon swing_bottom_nav__line"></i><i class="swing_icon swing_bottom_nav__solid"></i></span><span class="swing_bottom_nav__label">{label}</span></a>. ' +
+      'Min 52, padding 8/4/4, gap 4, icon 24, B3 Semibold dark-300. active = the SOLID icon in purple-500 + purple-600 label (swap icon to the solid one) · pressed = light-300 · action = 48 purple-500 circle pulled up 24, + icon, middle slot only. showCounter = .swing_counter on the icon.';
   }
   var set = await buildSet(page, 'BottomNavItem', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'BottomNavItem', description: 'One tab of the bottom navigation. Active uses the solid icon and a purple label, no extra indicator. The action is the purple Post button in the middle.',
-    code: ['<a class="bottom-nav__item is-active" href="/home" aria-current="page"><span class="bottom-nav__icon">…line + solid…</span><span class="bottom-nav__label">Home</span></a>', 'state active = .is-active / aria-current · type action = .bottom-nav__item--action'],
+    code: ['<a class="swing_bottom_nav__item is-active" href="/home" aria-current="page"><span class="swing_bottom_nav__icon">…line + solid…</span><span class="swing_bottom_nav__label">Home</span></a>', 'state active = .is-active / aria-current · type action = .swing_bottom_nav__item_action'],
     colGroups: [{ label: 'type', cols: ['tab', 'action'] }], rowGroups: [{ label: 'state', rows: ['default', 'active', 'pressed'] }],
     place: function (v) { return { cg: 0, c: v.type === 'action' ? 1 : 0, rg: 0, r: ['default', 'active', 'pressed'].indexOf(v.state) }; }
   });
@@ -4685,11 +4875,11 @@ async function buildBottomNavPage(R, notes) {
       if (t[2]) props.icon = t[2].id;
       try { it.setProperties(propsFor(it, props)); } catch (e) { /* defaults */ }
     });
-  }, function (s) { s.description = '<nav class="bottom-nav" aria-label="Main">…bottom-nav__item…</nav>. 390 wide, light-100, 1px light-500 line on top (--line-sticky-up), padding 4/8/8 (bottom grows with the home indicator), 3–5 equal items. Swap the active tab and its solid icon per screen.'; }, function () {}, R);
+  }, function (s) { s.description = '<nav class="swing_bottom_nav" aria-label="Main">…swing_bottom_nav__item…</nav>. 390 wide, light-100, 1px light-500 line on top (--line-sticky-up), padding 4/8/8 (bottom grows with the home indicator), 3–5 equal items. Swap the active tab and its solid icon per screen.'; }, function () {}, R);
   var pn = pairUp(nav, nv, function (c) { return /^items=/.test(c.name); });
   await docArtboard(R, page, nav, pn.comps, pn.vs, {
     title: 'BottomNav', description: 'The main navigation. Five items with the Post action in the middle, four tabs, or the three tabs of the Home V5 app (Home, Activity, Account).',
-    code: ['<nav class="bottom-nav" aria-label="Main"><a class="bottom-nav__item is-active" aria-current="page">…</a>…</nav>', 'items 5 = with .bottom-nav__item--action in the middle · items 3 = ref/home.html'],
+    code: ['<nav class="swing_bottom_nav" aria-label="Main"><a class="swing_bottom_nav__item is-active" aria-current="page">…</a>…</nav>', 'items 5 = with .swing_bottom_nav__item_action in the middle · items 3 = ref/home.html'],
     colGroups: [{ label: 'example', cols: ['nav'] }], rowGroups: [{ label: 'items', rows: ['5', '4', '3'] }],
     place: function (v) { return { cg: 0, c: 0, rg: 0, r: ['5', '4', '3'].indexOf(v.items) }; }
   });
@@ -4717,11 +4907,11 @@ async function buildAppBarPage(R, notes) {
     node.constraints = { horizontal: 'SCALE', vertical: 'SCALE' };
     comp.fills = [];
     node.findAll(function (n) { return n.type === 'VECTOR' || n.type === 'BOOLEAN_OPERATION'; }).forEach(function (n) { n.fills = paintFor(R, word ? '--purple-500' : '--light-100'); });
-  }, function (s) { s.description = 'Swing brand marks from /swing/ds/brand: wordmark 82 x 24 in purple-500 (.appbar__logo), Swing Pass mark 16 in light-100 (.appbar__pass::before). Change the colour on the art layers if a screen needs it.'; }, function () {}, R);
+  }, function (s) { s.description = 'Swing brand marks from /swing/ds/brand: wordmark 82 x 24 in purple-500 (.swing_appbar__logo), Swing Pass mark 16 in light-100 (.swing_appbar__pass::before). Change the colour on the art layers if a screen needs it.'; }, function () {}, R);
   var pb = pairUp(brand, brv, function (c) { return /^type=/.test(c.name); });
   await docArtboard(R, page, brand, pb.comps, pb.vs, {
     title: 'Brand', description: 'The Swing wordmark and the Swing Pass mark, used in the home header.',
-    code: ['<span class="appbar__logo" role="img" aria-label="Swing"></span>', '.appbar__pass::before = swing-pass.svg'],
+    code: ['<span class="swing_appbar__logo" role="img" aria-label="Swing"></span>', '.swing_appbar__pass::before = swing-pass.svg'],
     colGroups: [{ label: 'type', cols: ['wordmark', 'passMark'] }], rowGroups: [{ label: 'example', rows: ['mark'] }],
     place: function (v) { return { cg: 0, c: v.type === 'wordmark' ? 0 : 1, rg: 0, r: 0 }; },
     backdrop: function (v) { return v.type === 'passMark' ? '--dark-400' : null; }
@@ -4861,22 +5051,22 @@ async function buildAppBarPage(R, notes) {
     var pT = ensureProp(set, 'title', 'TEXT', 'Booking details');
     var pA = ensureProp(set, 'showActions', 'BOOLEAN', true);
     var pPh = ensureProp(set, 'placeholder', 'TEXT', 'Search...'), pCo = ensureProp(set, 'country', 'TEXT', 'ID');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       if (p.title && !/type=(home|search)/.test(k)) p.title.componentPropertyReferences = { characters: pT };
       if (p.actions) p.actions.componentPropertyReferences = { visible: pA };
       if (p.ph) p.ph.componentPropertyReferences = { characters: pPh };
       if (p.code) p.code.componentPropertyReferences = { characters: pCo };
     });
-    set.description = '<header class="appbar [appbar--center|appbar--root] [is-scrolled]"><div class="appbar__bar"><button class="appbar__icon" aria-label="Back">chevron-left</button><h1 class="appbar__title">{title}</h1><div class="appbar__actions">…</div></div></header>. ' +
-      'Bar 56, light-100, edge 16 to a 44 icon button (24 when the bar starts with text), gap 8, title H5 one line. center = title centred · adsShare = .appbar--ads with a share icon (20, dark-300) instead of the country button · adsInverse = .appbar--ads.appbar--inverse on the Swing Pass band: transparent, title and back light-100, country button in Button glass · centerCountry = .appbar--center with the country button (Button s tertiary neutral, flag + ID) in the actions, DS back chevron · ads = .appbar--center.appbar--ads: centred title, ADS back arrow 20 dark-300, country button (Button s tertiary neutral, flag + ID) · root = H3, no back · home = wordmark + PASS · chat = avatar + name H6 + sub B3 · search = 40 search field · homeSearch = Home V5 bar, 62 tall: menu, 36 light-300 search (placeholder B2 dark-200) with a light-200 country chip (flag 16, B2, chevron 12), bell. scrolled = 1px light-500 line (.is-scrolled). Put Tabs right under it for tabbed pages.';
+    set.description = '<header class="swing_appbar [swing_appbar_center|swing_appbar_root] [is-scrolled]"><div class="swing_appbar__bar"><button class="swing_appbar__icon" aria-label="Back">chevron-left</button><h1 class="swing_appbar__title">{title}</h1><div class="swing_appbar__actions">…</div></div></header>. ' +
+      'Bar 56, light-100, edge 16 to a 44 icon button (24 when the bar starts with text), gap 8, title H5 one line. center = title centred · adsShare = .swing_appbar_ads with a share icon (20, dark-300) instead of the country button · adsInverse = .swing_appbar_ads.appbar--inverse on the Swing Pass band: transparent, title and back light-100, country button in Button glass · centerCountry = .swing_appbar_center with the country button (Button s tertiary neutral, flag + ID) in the actions, DS back chevron · ads = .swing_appbar_center.appbar--ads: centred title, ADS back arrow 20 dark-300, country button (Button s tertiary neutral, flag + ID) · root = H3, no back · home = wordmark + PASS · chat = avatar + name H6 + sub B3 · search = 40 search field · homeSearch = Home V5 bar, 62 tall: menu, 36 light-300 search (placeholder B2 dark-200) with a light-200 country chip (flag 16, B2, chevron 12), bell. scrolled = 1px light-500 line (.is-scrolled). Put Tabs right under it for tabbed pages.';
   }
   var set = await buildSet(page, 'AppBar', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'AppBar', description: 'The page header. Back, a title and up to two actions; the line appears once the page scrolls.',
-    code: ['<header class="appbar"><div class="appbar__bar"><button class="appbar__icon" aria-label="Back">…</button><h1 class="appbar__title">Booking details</h1><div class="appbar__actions">…</div></div></header>',
-      'type center = .appbar--center · root = .appbar--root · home = .appbar__brand · chat = .appbar__lead · search = .field--search in the bar · homeSearch = .appbar__bar.home-bar with .searchbar + .searchbar__country · scrolled = .is-scrolled'],
+    code: ['<header class="swing_appbar"><div class="swing_appbar__bar"><button class="swing_appbar__icon" aria-label="Back">…</button><h1 class="swing_appbar__title">Booking details</h1><div class="swing_appbar__actions">…</div></div></header>',
+      'type center = .swing_appbar_center · root = .swing_appbar_root · home = .swing_appbar__brand · chat = .swing_appbar__lead · search = .swing_field_search in the bar · homeSearch = .swing_appbar__bar.home-bar with .swing_searchbar + .swing_searchbar__country · scrolled = .is-scrolled'],
     colGroups: [{ label: 'scrolled', cols: ['false', 'true'] }], rowGroups: [{ label: 'type', rows: APPBAR_TYPES }],
     place: function (v) { return { cg: 0, c: v.scrolled === 'true' ? 1 : 0, rg: 0, r: APPBAR_TYPES.indexOf(v.type) }; }
   });
@@ -4889,7 +5079,7 @@ var MEDIA_RATIO = { classic: [3, 2], wide: [16, 9], square: [1, 1], portrait: [4
 async function buildMediaSet(R, notes, page) {
   var img = (await findIcon('Icon/Solid/image')) || (await iconOrPlaceholder('Icon/Line/image', page, notes));
   var variants = [];
-  Object.keys(MEDIA_RATIO).forEach(function (r) { ['light', 'dark'].forEach(function (t) { ['photo', 'empty'].forEach(function (c) { variants.push({ ratio: r, tone: t, content: c }); }); }); });
+  wireKeys(MEDIA_RATIO).forEach(function (r) { ['light', 'dark'].forEach(function (t) { ['photo', 'empty'].forEach(function (c) { variants.push({ ratio: r, tone: t, content: c }); }); }); });
   simpleSet(variants);
   var set = await buildSet(page, 'Media', variants, async function (comp, v) {
     var q = MEDIA_RATIO[v.ratio], w = v.ratio === 'portrait' ? 200 : 342, h = Math.round(w * q[1] / q[0]);
@@ -4908,12 +5098,12 @@ async function buildMediaSet(R, notes, page) {
       ph.constraints = { horizontal: 'STRETCH', vertical: 'STRETCH' };
       ph.fills = paintFor(R, '--purple-100');
     }
-  }, function (s) { s.description = '<div class="media [media--wide|--square|--portrait] [media--dark] [media--empty]"><img …></div>. Radius 12 (0 inside a Card), light-300 behind the photo (dark: dark-200). ratio classic 3:2 (default) · wide 16:9 · square 1:1 · portrait 4:5. empty = placeholder with the image icon 40. Replace the photo layer\'s image fill; resize the instance keeping its ratio.'; }, function () {}, R);
+  }, function (s) { s.description = '<div class="swing_media [swing_media_wide|--square|--portrait] [swing_media_dark] [swing_media_empty]"><img …></div>. Radius 12 (0 inside a Card), light-300 behind the photo (dark: dark-200). ratio classic 3:2 (default) · wide 16:9 · square 1:1 · portrait 4:5. empty = placeholder with the image icon 40. Replace the photo layer\'s image fill; resize the instance keeping its ratio.'; }, function () {}, R);
   var pm = pairUp(set, variants, function (c) { return /^ratio=/.test(c.name); });
   var RAT = Object.keys(MEDIA_RATIO);
   await docArtboard(R, page, set, pm.comps, pm.vs, {
     title: 'Media', description: 'A photo cropped to a fixed ratio, or the placeholder while it loads or when there is none.',
-    code: ['<div class="media media--wide"><img src="…" alt="…"></div> · <div class="media media--empty"></div>', 'ratio wide = .media--wide · square = --square · portrait = --portrait · tone dark = .media--dark'],
+    code: ['<div class="swing_media swing_media_wide"><img src="…" alt="…"></div> · <div class="swing_media swing_media_empty"></div>', 'ratio wide = .swing_media_wide · square = --square · portrait = --portrait · tone dark = .swing_media_dark'],
     colGroups: [{ label: 'tone light', cols: ['photo', 'empty'] }, { label: 'tone dark', cols: ['photo', 'empty'] }], rowGroups: [{ label: 'ratio', rows: RAT }],
     place: function (v) { return { cg: v.tone === 'dark' ? 1 : 0, c: v.content === 'empty' ? 1 : 0, rg: 0, r: RAT.indexOf(v.ratio) }; }
   });
@@ -5018,7 +5208,7 @@ async function buildCardPage(R, notes) {
     var pS = ensureProp(set, 'score', 'TEXT', '4.9');
     var pRv = ensureProp(set, 'reviews', 'TEXT', '(132 reviews)');
     var pF = ensureProp(set, 'showFooter', 'BOOLEAN', true);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       if (p.media) p.media.componentPropertyReferences = { visible: pM };
       p.title.componentPropertyReferences = { characters: pT };
@@ -5029,14 +5219,14 @@ async function buildCardPage(R, notes) {
       p.reviews.componentPropertyReferences = { characters: pRv };
       p.foot.componentPropertyReferences = { visible: pF };
     });
-    set.description = '<article class="card [card--overlay] [card--link]"><div class="media media--wide">…</div><div class="card__body"><div class="card__head"><h3 class="card__title">{title}</h3><p class="card__text">{text}</p></div><div class="card__meta">…</div><span class="card__rating">…</span></div><div class="card__footer">…</div></article>. ' +
-      'Flat: light-100 + 1px light-500 ring, radius 16, no shadow. Body padding 16, gap 12; title H5, text B1 dark-300, meta B2 dark-200, rating star 16 orange-500. Footer under a light-500 line inset 16. overlay = 4:5, photo behind with the media scrim, white text (padding 24/16/16). pressed = light-200 (a.card / .card--link).';
+    set.description = '<article class="swing_card [swing_card_overlay] [swing_card_link]"><div class="swing_media swing_media_wide">…</div><div class="swing_card__body"><div class="swing_card__head"><h3 class="swing_card__title">{title}</h3><p class="swing_card__text">{text}</p></div><div class="swing_card__meta">…</div><span class="swing_card__rating">…</span></div><div class="swing_card__footer">…</div></article>. ' +
+      'Flat: light-100 + 1px light-500 ring, radius 16, no shadow. Body padding 16, gap 12; title H5, text B1 dark-300, meta B2 dark-200, rating star 16 orange-500. Footer under a light-500 line inset 16. overlay = 4:5, photo behind with the media scrim, white text (padding 24/16/16). pressed = light-200 (a.card / .swing_card_link).';
   }
   var set = await buildSet(page, 'Card', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Card', description: 'The flat content card: photo, title, a line of text, meta, rating and an optional footer action. overlay puts the text on the photo.',
-    code: ['<article class="card"><div class="media media--wide"><img …></div><div class="card__body"><div class="card__head"><h3 class="card__title">…</h3><p class="card__text">…</p></div></div><div class="card__footer"><a class="btn btn--m">…</a></div></article>', 'type overlay = .card--overlay · pressed = a.card:active · showMedia / showMeta / showRating / showFooter = leave that block out'],
+    code: ['<article class="swing_card"><div class="swing_media swing_media_wide"><img …></div><div class="swing_card__body"><div class="swing_card__head"><h3 class="swing_card__title">…</h3><p class="swing_card__text">…</p></div></div><div class="swing_card__footer"><a class="swing_btn swing_btn_m">…</a></div></article>', 'type overlay = .swing_card_overlay · pressed = a.card:active · showMedia / showMeta / showRating / showFooter = leave that block out'],
     colGroups: [{ label: 'state', cols: ['default', 'pressed'] }], rowGroups: [{ label: 'type', rows: ['standard', 'overlay'] }],
     place: function (v) { return { cg: 0, c: v.state === 'pressed' ? 1 : 0, rg: 0, r: v.type === 'overlay' ? 1 : 0 }; }
   });
@@ -5059,13 +5249,13 @@ async function buildCardPage(R, notes) {
     sParts[comp.name] = { label: l, value: val };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'HCP'), pV = ensureProp(s, 'value', 'TEXT', '12.4');
-    Object.keys(sParts).forEach(function (k) { sParts[k].label.componentPropertyReferences = { characters: pL }; sParts[k].value.componentPropertyReferences = { characters: pV }; });
-    s.description = '<div class="stat [stat--neutral]"><span class="stat__label">{label}</span><span class="stat__value">{value}</span></div>. purple-50 + purple-600, label B2, value H4, padding 12/8, radius 8. neutral = light-200 + 1px light-500, dark-500 value. Put 2 in .stat-grid or 1–4 in .stat-row (gap 8), set to Fill.';
+    wireKeys(sParts).forEach(function (k) { sParts[k].label.componentPropertyReferences = { characters: pL }; sParts[k].value.componentPropertyReferences = { characters: pV }; });
+    s.description = '<div class="swing_stat [swing_stat_neutral]"><span class="swing_stat__label">{label}</span><span class="swing_stat__value">{value}</span></div>. purple-50 + purple-600, label B2, value H4, padding 12/8, radius 8. neutral = light-200 + 1px light-500, dark-500 value. Put 2 in .swing_stat_grid or 1–4 in .swing_stat_row (gap 8), set to Fill.';
   }, function () {}, R);
   var ps = pairUp(stat, sv, function (c) { return sParts[c.name]; });
   await docArtboard(R, page, stat, ps.comps, ps.vs, {
     title: 'Stat', description: 'A number tile inside a card: handicap, gross, net. Neutral when purple would compete with the page.',
-    code: ['<div class="stat-grid"><div class="stat"><span class="stat__label">HCP</span><span class="stat__value">12.4</span></div>…</div>', 'tone neutral = .stat--neutral · .stat-row = 1-4 equal tiles'],
+    code: ['<div class="swing_stat_grid"><div class="swing_stat"><span class="swing_stat__label">HCP</span><span class="swing_stat__value">12.4</span></div>…</div>', 'tone neutral = .swing_stat_neutral · .swing_stat_row = 1-4 equal tiles'],
     colGroups: [{ label: 'tone', cols: ['primary', 'neutral'] }], rowGroups: [{ label: 'example', rows: ['stat'] }],
     place: function (v) { return { cg: 0, c: v.tone === 'neutral' ? 1 : 0, rg: 0, r: 0 }; }
   });
@@ -5113,20 +5303,20 @@ async function buildActionCardPage(R, notes) {
     var pT = ensureProp(set, 'title', 'TEXT', 'Book a tee time');
     var pSD = ensureProp(set, 'showDesc', 'BOOLEAN', true);
     var pD = ensureProp(set, 'desc', 'TEXT', '120+ courses near you');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.icon.componentPropertyReferences = { mainComponent: pI };
       p.title.componentPropertyReferences = { characters: pT };
       p.desc.componentPropertyReferences = { visible: pSD, characters: pD };
     });
-    set.description = '<a class="action-card [action-card--{tone}] [action-card--row] [action-card--strong]"><span class="action-card__icon"><i class="icon"></i></span><span class="action-card__text"><span class="action-card__title">{title}</span><span class="action-card__desc">{desc}</span></span></a>. ' +
+    set.description = '<a class="swing_action_card [swing_action_card_{tone}] [swing_action_card_row] [swing_action_card_strong]"><span class="swing_action_card__icon"><i class="swing_icon"></i></span><span class="swing_action_card__text"><span class="swing_action_card__title">{title}</span><span class="swing_action_card__desc">{desc}</span></span></a>. ' +
       'Tint 50 + 1px tint-100 ring, radius 12, padding 16, gap 12. Icon 24 in a 40 white tile (radius 8), title S3 Semibold in the tone (600/700), desc B2 dark-300. strong = 100 tint, no ring · row = full width + chevron. Tile width 165 = half of 342 minus 12; set to Fill in a grid.';
   }
   var set = await buildSet(page, 'ActionCard', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'ActionCard', description: 'A shortcut tile on Home: icon, title and one line. Six tones; strong uses the 100 tint; row is full width with a chevron.',
-    code: ['<a class="action-card action-card--green" href="#"><span class="action-card__icon"><i class="icon" …></i></span><span class="action-card__text"><span class="action-card__title">Book a tee time</span><span class="action-card__desc">…</span></span></a>', 'tone = .action-card--pink / --green / --teal / --blue / --orange · layout row = .action-card--row · strong = .action-card--strong'],
+    code: ['<a class="swing_action_card swing_action_card_green" href="#"><span class="swing_action_card__icon"><i class="swing_icon" …></i></span><span class="swing_action_card__text"><span class="swing_action_card__title">Book a tee time</span><span class="swing_action_card__desc">…</span></span></a>', 'tone = .swing_action_card_pink / --green / --teal / --blue / --orange · layout row = .swing_action_card_row · strong = .swing_action_card_strong'],
     colGroups: [{ label: 'layout tile', cols: ['default', 'strong'] }, { label: 'layout row', cols: ['default', 'strong'] }], rowGroups: [{ label: 'tone', rows: TONES }],
     place: function (v) { return { cg: v.layout === 'row' ? 1 : 0, c: v.strong === 'true' ? 1 : 0, rg: 0, r: TONES.indexOf(v.tone) }; }
   });
@@ -5220,7 +5410,7 @@ async function buildCourseCardPage(R, notes) {
     var pP = ensureProp(set, 'price', 'TEXT', 'From Rp 850k');
     var pSM = ensureProp(set, 'showMeta', 'BOOLEAN', true);
     var pM = ensureProp(set, 'meta', 'TEXT', 'Next tee time 07:30');
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.tags.componentPropertyReferences = { visible: pTg };
       p.title.componentPropertyReferences = { characters: pT };
@@ -5230,14 +5420,14 @@ async function buildCourseCardPage(R, notes) {
       p.meta.componentPropertyReferences = { visible: pSM };
       p.metaText.componentPropertyReferences = { characters: pM };
     });
-    set.description = '<a class="course-card"><div class="media">…</div><div class="course-card__tags"><span class="badge badge--on-media">…</span></div><button class="course-card__save" aria-pressed="{saved}">bookmark</button><div class="course-card__body"><div class="course-card__row"><h3 class="course-card__title">{title}</h3><span class="course-card__rating">★ {score}</span></div><span class="course-card__text">{text}</span><span class="course-card__price [is-promo]">{price}</span><span class="course-card__meta">…</span></div></a>. ' +
+    set.description = '<a class="swing_course_card"><div class="swing_media">…</div><div class="swing_course_card__tags"><span class="swing_badge swing_badge_on_media">…</span></div><button class="swing_course_card__save" aria-pressed="{saved}">bookmark</button><div class="swing_course_card__body"><div class="swing_course_card__row"><h3 class="swing_course_card__title">{title}</h3><span class="swing_course_card__rating">★ {score}</span></div><span class="swing_course_card__text">{text}</span><span class="swing_course_card__price [is-promo]">{price}</span><span class="swing_course_card__meta">…</span></div></a>. ' +
       'No surface: square photo radius 16, tags on it (white badges), save 40 white circle (saved = purple-500 solid bookmark). Title S2 Semibold one line, text B2 dark-300, price B2 Semibold (promo = orange-700 + price-tag), meta B3 Semibold dark-200. 240 wide in a CardRail.';
   }
   var set = await buildSet(page, 'CourseCard', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'CourseCard', description: 'A golf course in a list or a rail: photo with tags and a save button, then name, rating, place, price and the next tee time.',
-    code: ['<a class="course-card" href="#"><div class="media"><img …></div><div class="course-card__tags">…</div><button class="course-card__save" aria-pressed="false">…</button><div class="course-card__body">…</div></a>', 'saved = aria-pressed="true" · promo = .course-card__price.is-promo'],
+    code: ['<a class="swing_course_card" href="#"><div class="swing_media"><img …></div><div class="swing_course_card__tags">…</div><button class="swing_course_card__save" aria-pressed="false">…</button><div class="swing_course_card__body">…</div></a>', 'saved = aria-pressed="true" · promo = .swing_course_card__price.is-promo'],
     colGroups: [{ label: 'saved', cols: ['false', 'true'] }], rowGroups: [{ label: 'promo', rows: ['false', 'true'] }],
     place: function (v) { return { cg: 0, c: v.saved === 'true' ? 1 : 0, rg: 0, r: v.promo === 'true' ? 1 : 0 }; }
   });
@@ -5256,11 +5446,11 @@ async function buildCourseCardPage(R, notes) {
       var it = CC['saved=' + c[0] + ', promo=' + c[1]].createInstance(); comp.appendChild(it);
       try { it.setProperties(propsFor(it, { title: c[2] })); } catch (e) { /* default */ }
     });
-  }, function (s) { s.description = '<div class="card-rail">…course-card…</div>. 240 items, gap 16, padding 0 24 4 (page-x), scrolls sideways and snaps per card, bleeds to the screen edge. 390 wide, clips.'; }, function () {}, R);
+  }, function (s) { s.description = '<div class="swing_card_rail">…course-card…</div>. 240 items, gap 16, padding 0 24 4 (page-x), scrolls sideways and snaps per card, bleeds to the screen edge. 390 wide, clips.'; }, function () {}, R);
   var pr = pairUp(rail, rv, function (c) { return c.name === 'type=default'; });
   await docArtboard(R, page, rail, pr.comps, pr.vs, {
     title: 'CardRail', description: 'A horizontal rail of 240 cards that scrolls and snaps, edge to edge.',
-    code: ['<div class="card-rail"><a class="course-card">…</a>…</div>', '--rail-item: 240px · gap 16 · scroll-padding = page-x'],
+    code: ['<div class="swing_card_rail"><a class="swing_course_card">…</a>…</div>', '--rail-item: 240px · gap 16 · scroll-padding = page-x'],
     colGroups: [{ label: 'example', cols: ['rail'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -5303,13 +5493,13 @@ async function buildCourseCardPage(R, notes) {
     kParts[comp.name] = { dots: dots, count: cnt, countText: ct };
   }, function (s) {
     var pD = ensureProp(s, 'showDots', 'BOOLEAN', true), pC = ensureProp(s, 'showCount', 'BOOLEAN', true), pT = ensureProp(s, 'count', 'TEXT', '1 / 12');
-    Object.keys(kParts).forEach(function (k) { var p = kParts[k]; p.dots.componentPropertyReferences = { visible: pD }; p.count.componentPropertyReferences = { visible: pC }; p.countText.componentPropertyReferences = { characters: pT }; });
-    s.description = '<div class="carousel"><div class="carousel__track"><div class="media">…</div>…</div></div>. Radius 12, swipes one photo at a time. carousel.js adds the dots chip (bottom 12, scrim-media-soft, 6px white dots at 48%, active 8 at 100%) and the "1 / 12" chip (top-right 12, h20, B3 Semibold white).';
+    wireKeys(kParts).forEach(function (k) { var p = kParts[k]; p.dots.componentPropertyReferences = { visible: pD }; p.count.componentPropertyReferences = { visible: pC }; p.countText.componentPropertyReferences = { characters: pT }; });
+    s.description = '<div class="swing_carousel"><div class="swing_carousel__track"><div class="swing_media">…</div>…</div></div>. Radius 12, swipes one photo at a time. carousel.js adds the dots chip (bottom 12, scrim-media-soft, 6px white dots at 48%, active 8 at 100%) and the "1 / 12" chip (top-right 12, h20, B3 Semibold white).';
   }, function () {}, R);
   var pk = pairUp(car, kv, function (c) { return c.name === 'type=default'; });
   await docArtboard(R, page, car, pk.comps, pk.vs, {
     title: 'Carousel', description: 'Swipeable photos with dots and a count, for course and event details.',
-    code: ['<div class="carousel"><div class="carousel__track"><div class="media"><img …></div>…</div></div>', 'carousel.js draws .carousel__dots and .carousel__count'],
+    code: ['<div class="swing_carousel"><div class="swing_carousel__track"><div class="swing_media"><img …></div>…</div></div>', 'carousel.js draws .swing_carousel__dots and .swing_carousel__count'],
     colGroups: [{ label: 'example', cols: ['carousel'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -5369,14 +5559,14 @@ async function buildSheetPage(R, notes) {
   }, function (set) {
     var pT = ensureProp(set, 'title', 'TEXT', 'Choose players'), pSD = ensureProp(set, 'showDesc', 'BOOLEAN', false), pD = ensureProp(set, 'desc', 'TEXT', 'Up to 4 in one flight');
     var pSC = ensureProp(set, 'showClose', 'BOOLEAN', true), pSB = ensureProp(set, 'showBack', 'BOOLEAN', true);
-    Object.keys(hParts).forEach(function (k) { var p = hParts[k]; p.title.componentPropertyReferences = { characters: pT }; p.desc.componentPropertyReferences = { visible: pSD, characters: pD }; p.close.componentPropertyReferences = { visible: pSC }; if (p.back) p.back.componentPropertyReferences = { visible: pSB }; });
-    set.description = '<header class="sheet__head [sheet__head--center]"><button class="sheet__icon" aria-label="Back">…</button><div class="sheet__heading"><h2 class="sheet__title">{title}</h2><p class="sheet__desc">{desc}</p></div><button class="sheet__close" aria-label="Close">close-lg</button></header>. ' +
-      'Padding 12 16 16 24 (center: 12 16 16 16), title H5, desc B2 dark-300, 44 icon buttons with 24 dark-300 icons. center = back · title · close with the title centred. lined = 1px light-500 line once the body scrolls (.is-scrolled / .sheet--lined).';
+    wireKeys(hParts).forEach(function (k) { var p = hParts[k]; p.title.componentPropertyReferences = { characters: pT }; p.desc.componentPropertyReferences = { visible: pSD, characters: pD }; p.close.componentPropertyReferences = { visible: pSC }; if (p.back) p.back.componentPropertyReferences = { visible: pSB }; });
+    set.description = '<header class="swing_sheet__head [swing_sheet__head_center]"><button class="swing_sheet__icon" aria-label="Back">…</button><div class="swing_sheet__heading"><h2 class="swing_sheet__title">{title}</h2><p class="swing_sheet__desc">{desc}</p></div><button class="swing_sheet__close" aria-label="Close">close-lg</button></header>. ' +
+      'Padding 12 16 16 24 (center: 12 16 16 16), title H5, desc B2 dark-300, 44 icon buttons with 24 dark-300 icons. center = back · title · close with the title centred. lined = 1px light-500 line once the body scrolls (.is-scrolled / .swing_sheet_lined).';
   }, function () {}, R);
   var ph = pairUp(head, hv, function (c) { return hParts[c.name]; });
   await docArtboard(R, page, head, ph.comps, ph.vs, {
     title: 'SheetHead', description: 'The top of every sheet and modal: title (and a line of description), close, and a back button in the centred version.',
-    code: ['<header class="sheet__head"><div class="sheet__heading"><h2 class="sheet__title" id="t">Choose players</h2></div><button class="sheet__close" aria-label="Close">…</button></header>', 'align center = .sheet__head--center · lined = .is-scrolled / .sheet--lined · showDesc = .sheet__desc'],
+    code: ['<header class="swing_sheet__head"><div class="swing_sheet__heading"><h2 class="swing_sheet__title" id="t">Choose players</h2></div><button class="swing_sheet__close" aria-label="Close">…</button></header>', 'align center = .swing_sheet__head_center · lined = .is-scrolled / .swing_sheet_lined · showDesc = .swing_sheet__desc'],
     colGroups: [{ label: 'lined', cols: ['false', 'true'] }], rowGroups: [{ label: 'align', rows: ['start', 'center'] }],
     place: function (v) { return { cg: 0, c: v.lined === 'true' ? 1 : 0, rg: 0, r: v.align === 'center' ? 1 : 0 }; }
   });
@@ -5401,13 +5591,13 @@ async function buildSheetPage(R, notes) {
     aParts[comp.name] = { icon: i, label: t };
   }, function (set) {
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', I.link.id), pL = ensureProp(set, 'label', 'TEXT', 'Copy link');
-    Object.keys(aParts).forEach(function (k) { aParts[k].icon.componentPropertyReferences = { mainComponent: pI }; aParts[k].label.componentPropertyReferences = { characters: pL }; });
-    set.description = '<button class="share-to__app"><span class="share-to__mark"><i class="icon"></i></span>{label}</button>. 64 wide, 48 light-300 tile (radius 12) with a 20 icon or a 40 app logo, label B3 Semibold. In .share-to, gap 8, scrolls sideways.';
+    wireKeys(aParts).forEach(function (k) { aParts[k].icon.componentPropertyReferences = { mainComponent: pI }; aParts[k].label.componentPropertyReferences = { characters: pL }; });
+    set.description = '<button class="swing_share_to__app"><span class="swing_share_to__mark"><i class="swing_icon"></i></span>{label}</button>. 64 wide, 48 light-300 tile (radius 12) with a 20 icon or a 40 app logo, label B3 Semibold. In .swing_share_to, gap 8, scrolls sideways.';
   }, function () {}, R);
   var pa = pairUp(app, av, function (c) { return aParts[c.name]; });
   await docArtboard(R, page, app, pa.comps, pa.vs, {
     title: 'ShareApp', description: 'One target in the share sheet.',
-    code: ['<div class="share-to"><button class="share-to__app"><span class="share-to__mark">…</span>Copy link</button>…</div>', 'icon swap for WhatsApp, Instagram, More'],
+    code: ['<div class="swing_share_to"><button class="swing_share_to__app"><span class="swing_share_to__mark">…</span>Copy link</button>…</div>', 'icon swap for WhatsApp, Instagram, More'],
     colGroups: [{ label: 'example', cols: ['app'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -5534,15 +5724,15 @@ async function buildSheetPage(R, notes) {
       }
     }
   }, function (set) {
-    set.description = '<div class="sheet-scrim"></div><section class="sheet [sheet--dialog]" role="dialog" aria-modal="true"><span class="sheet__handle"></span><header class="sheet__head">…</header><div class="sheet__body">…</div><footer class="sheet__foot">…</footer></section>. ' +
+    set.description = '<div class="swing_sheet_scrim"></div><section class="swing_sheet [swing_sheet_dialog]" role="dialog" aria-modal="true"><span class="swing_sheet__handle"></span><header class="swing_sheet__head">…</header><div class="swing_sheet__body">…</div><footer class="swing_sheet__foot">…</footer></section>. ' +
       '390 (max 480) wide, up to 88% tall, light-100, radius 16 16 0 0, Elevation 3, --scrim behind. Handle 32 x 4 light-500. Body padding 8 24 24, gap 16. Foot padding 16 24 32 with a line above (dialog: none). ' +
-      'type = the ready patterns: options (Select sheet), form (centred head, summary + Pay), dialog (art 64, H4 title, B1 text, note, stacked buttons), share (.share-to), empty (.sheet__empty). Parts are instances: detach or swap per screen.';
+      'type = the ready patterns: options (Select sheet), form (centred head, summary + Pay), dialog (art 64, H4 title, B1 text, note, stacked buttons), share (.swing_share_to), empty (.swing_sheet__empty). Parts are instances: detach or swap per screen.';
   }, function () {}, R);
   var ps = pairUp(sheet, sv, function (c) { return /^type=/.test(c.name); });
   await docArtboard(R, page, sheet, ps.comps, ps.vs, {
     title: 'Sheet', description: 'Every modal is a bottom sheet. These are the ready patterns: a list of options, a short form with a summary, a dialog with one decision, share, and the empty state.',
-    code: ['<section class="sheet" role="dialog" aria-modal="true" aria-labelledby="t"><span class="sheet__handle"></span><header class="sheet__head">…</header><div class="sheet__body">…</div><footer class="sheet__foot"><button class="btn btn--block">…</button></footer></section>',
-      'type dialog = .sheet--dialog + .sheet__art / .sheet__note · form foot = .sheet__sum · share = .share-to · empty = .sheet__empty'],
+    code: ['<section class="swing_sheet" role="dialog" aria-modal="true" aria-labelledby="t"><span class="swing_sheet__handle"></span><header class="swing_sheet__head">…</header><div class="swing_sheet__body">…</div><footer class="swing_sheet__foot"><button class="swing_btn swing_btn_block">…</button></footer></section>',
+      'type dialog = .swing_sheet_dialog + .swing_sheet__art / .swing_sheet__note · form foot = .swing_sheet__sum · share = .swing_share_to · empty = .swing_sheet__empty'],
     colGroups: [{ label: 'type', cols: TYPES }], rowGroups: [{ label: 'example', rows: ['sheet'] }],
     place: function (v) { return { cg: 0, c: TYPES.indexOf(v.name.split('=')[1]), rg: 0, r: 0 }; },
     backdrop: function () { return '--light-300'; }
@@ -5596,13 +5786,13 @@ async function buildSearchPage(R, notes) {
   }, function (set) {
     var pT = ensureProp(set, 'title', 'TEXT', 'pondok indah'), pSM = ensureProp(set, 'showMeta', 'BOOLEAN', false), pM = ensureProp(set, 'meta', 'TEXT', 'Golf course · South Jakarta');
     var pI = ensureProp(set, 'icon', 'INSTANCE_SWAP', I.clock.id);
-    Object.keys(rParts).forEach(function (k) { var p = rParts[k]; p.title.componentPropertyReferences = { characters: pT }; p.meta.componentPropertyReferences = { visible: pSM, characters: pM }; if (p.icon) p.icon.componentPropertyReferences = { mainComponent: pI }; });
-    set.description = '<a class="search__row"><i class="icon"></i>|<div class="media"></div><span class="search__text"><span class="search__title">…<mark>{match}</mark>…</span><span class="search__meta">{meta}</span></span></a>. Min 48, padding 4 0, gap 12, radius 8, B1 dark-500; the match is B1 Semibold purple-600 (re-apply after editing the title). icon 20 dark-200 · media 48 square radius 8. pressed = light-200.';
+    wireKeys(rParts).forEach(function (k) { var p = rParts[k]; p.title.componentPropertyReferences = { characters: pT }; p.meta.componentPropertyReferences = { visible: pSM, characters: pM }; if (p.icon) p.icon.componentPropertyReferences = { mainComponent: pI }; });
+    set.description = '<a class="swing_search__row"><i class="swing_icon"></i>|<div class="swing_media"></div><span class="swing_search__text"><span class="swing_search__title">…<mark>{match}</mark>…</span><span class="swing_search__meta">{meta}</span></span></a>. Min 48, padding 4 0, gap 12, radius 8, B1 dark-500; the match is B1 Semibold purple-600 (re-apply after editing the title). icon 20 dark-200 · media 48 square radius 8. pressed = light-200.';
   }, function () {}, R);
   var pr = pairUp(row, rv, function (c) { return rParts[c.name]; });
   await docArtboard(R, page, row, pr.comps, pr.vs, {
     title: 'SearchRow', description: 'A suggestion or a result under the search bar. The part that matches what was typed is purple.',
-    code: ['<a class="search__row" href="#"><i class="icon" …clock></i><span class="search__text"><span class="search__title"><mark>pondok</mark> indah</span></span></a>', 'lead media = .media 48 · showMeta = .search__meta · pressed = :active'],
+    code: ['<a class="swing_search__row" href="#"><i class="swing_icon" …clock></i><span class="swing_search__text"><span class="swing_search__title"><mark>pondok</mark> indah</span></span></a>', 'lead media = .swing_media 48 · showMeta = .swing_search__meta · pressed = :active'],
     colGroups: [{ label: 'state', cols: ['default', 'pressed'] }], rowGroups: [{ label: 'lead', rows: ['icon', 'media'] }],
     place: function (v) { return { cg: 0, c: v.state === 'pressed' ? 1 : 0, rg: 0, r: v.lead === 'media' ? 1 : 0 }; }
   });
@@ -5621,11 +5811,11 @@ async function buildSearchPage(R, notes) {
       var b = BTN['size=m, tone=primary, appearance=ghost, state=default'];
       if (b) { var bi = b.createInstance(); comp.appendChild(bi); try { bi.setProperties(propsFor(bi, { label: 'Cancel' })); } catch (e) { /* default */ } }
     }
-  }, function (s) { s.description = '<div class="search [is-active]"><div class="search__bar"><div class="field field--search">…</div><button class="btn btn--ghost btn--m search__cancel">Cancel</button></div>…</div>. Cancel shows while the bar is focused or has text (.is-active). The field is a TextField type=search instance.'; }, function () {}, R);
+  }, function (s) { s.description = '<div class="swing_search [is-active]"><div class="swing_search__bar"><div class="swing_field swing_field_search">…</div><button class="swing_btn swing_btn_ghost swing_btn_m swing_search__cancel">Cancel</button></div>…</div>. Cancel shows while the bar is focused or has text (.is-active). The field is a TextField type=search instance.'; }, function () {}, R);
   var pb = pairUp(bar, bv, function (c) { return /^state=/.test(c.name); });
   await docArtboard(R, page, bar, pb.comps, pb.vs, {
     title: 'SearchBar', description: 'The search field, with Cancel while it is in use.',
-    code: ['<div class="search__bar"><div class="field field--search">…</div><button class="btn btn--ghost btn--m search__cancel">Cancel</button></div>', 'state active = .search.is-active'],
+    code: ['<div class="swing_search__bar"><div class="swing_field swing_field_search">…</div><button class="swing_btn swing_btn_ghost swing_btn_m swing_search__cancel">Cancel</button></div>', 'state active = .swing_search.is-active'],
     colGroups: [{ label: 'example', cols: ['bar'] }], rowGroups: [{ label: 'state', rows: ['default', 'active'] }],
     place: function (v) { return { cg: 0, c: 0, rg: 0, r: v.name === 'state=active' ? 1 : 0 }; }
   });
@@ -5660,11 +5850,11 @@ async function buildSearchPage(R, notes) {
     }
     await group('Recent', 'Clear', [['lead=icon, state=default', { title: 'pondok indah' }], ['lead=icon, state=default', { title: 'night golf jakarta' }]]);
     await group('Courses', null, [['lead=media, state=default', { title: 'Pondok Indah Golf Course', showMeta: true }], ['lead=media, state=default', { title: 'Pondok Ranji Driving Range', showMeta: true, meta: 'Driving range · Tangerang Selatan' }]]);
-  }, function (s) { s.description = '<div class="search__panel"><div class="search__group"><div class="search__head">Recent <button>Clear</button></div>…search__row…</div>…</div>. Padding-top 16, groups 16 apart, head min 32 B2 Semibold dark-300. empty = .search__empty (H6 + B2, padding 32 16).'; }, function () {}, R);
+  }, function (s) { s.description = '<div class="swing_search__panel"><div class="swing_search__group"><div class="swing_search__head">Recent <button>Clear</button></div>…swing_search__row…</div>…</div>. Padding-top 16, groups 16 apart, head min 32 B2 Semibold dark-300. empty = .swing_search__empty (H6 + B2, padding 32 16).'; }, function () {}, R);
   var pp = pairUp(panel, nv, function (c) { return /^type=/.test(c.name); });
   await docArtboard(R, page, panel, pp.comps, pp.vs, {
     title: 'SearchPanel', description: 'What shows under the bar: recent searches and grouped results, or the no-result state.',
-    code: ['<div class="search__panel"><div class="search__group"><div class="search__head">Recent</div><a class="search__row">…</a></div></div>', 'type empty = .search__empty'],
+    code: ['<div class="swing_search__panel"><div class="swing_search__group"><div class="swing_search__head">Recent</div><a class="swing_search__row">…</a></div></div>', 'type empty = .swing_search__empty'],
     colGroups: [{ label: 'type', cols: ['results', 'empty'] }], rowGroups: [{ label: 'example', rows: ['panel'] }],
     place: function (v) { return { cg: 0, c: v.name === 'type=empty' ? 1 : 0, rg: 0, r: 0 }; }
   });
@@ -5700,13 +5890,13 @@ async function buildDatePickerPage(R, notes) {
     dParts[comp.name] = t;
   }, function (set) {
     var p = ensureProp(set, 'day', 'TEXT', '14');
-    Object.keys(dParts).forEach(function (k) { dParts[k].componentPropertyReferences = { characters: p }; });
-    set.description = '<button class="cal__day [is-today] [has-dot]" aria-pressed="{selected}">{day}</button>. 44, radius 12, B1 dark-500. today = 1px purple-500 ring + purple-500 B1 Semibold · selected = purple-500 + white B1 Semibold · pressed = light-300 · disabled = dark-100 (past or full). dot = 4px at 60% (has tee times / events).';
+    wireKeys(dParts).forEach(function (k) { dParts[k].componentPropertyReferences = { characters: p }; });
+    set.description = '<button class="swing_cal__day [is-today] [has-dot]" aria-pressed="{selected}">{day}</button>. 44, radius 12, B1 dark-500. today = 1px purple-500 ring + purple-500 B1 Semibold · selected = purple-500 + white B1 Semibold · pressed = light-300 · disabled = dark-100 (past or full). dot = 4px at 60% (has tee times / events).';
   }, function () {}, R);
   var pd = pairUp(day, dv, function (c) { return dParts[c.name]; });
   await docArtboard(R, page, day, pd.comps, pd.vs, {
     title: 'CalDay', description: 'One day of the month grid.',
-    code: ['<button class="cal__day is-today has-dot" aria-pressed="false">9</button>', 'selected = aria-pressed="true" · disabled = disabled · dot = .has-dot'],
+    code: ['<button class="swing_cal__day is-today has-dot" aria-pressed="false">9</button>', 'selected = aria-pressed="true" · disabled = disabled · dot = .has-dot'],
     colGroups: [{ label: 'dot', cols: ['false', 'true'] }], rowGroups: [{ label: 'state', rows: CAL_STATES }],
     place: function (v) { return { cg: 0, c: v.dot === 'true' ? 1 : 0, rg: 0, r: CAL_STATES.indexOf(v.state) }; }
   });
@@ -5754,11 +5944,11 @@ async function buildDatePickerPage(R, notes) {
         try { it.setProperties(propsFor(it, { day: String(n) })); } catch (e) { /* default */ }
       }
     }
-  }, function (s) { s.description = '<div class="cal"><div class="cal__nav"><button>‹</button><span class="cal__month">November 2026</span><button>›</button></div><div class="cal__grid">…cal__dow × 7, cal__day…</div></div>. Rendered by picker.js inside a Sheet. Month S2 Semibold, nav buttons 44 with 20 icons, weekday B3 Semibold dark-200 uppercase h32, 7 columns, rows 4 apart. Monday first.'; }, function () {}, R);
+  }, function (s) { s.description = '<div class="swing_cal"><div class="swing_cal__nav"><button>‹</button><span class="swing_cal__month">November 2026</span><button>›</button></div><div class="swing_cal__grid">…swing_cal__dow × 7, swing_cal__day…</div></div>. Rendered by picker.js inside a Sheet. Month S2 Semibold, nav buttons 44 with 20 icons, weekday B3 Semibold dark-200 uppercase h32, 7 columns, rows 4 apart. Monday first.'; }, function () {}, R);
   var pc = pairUp(cal, cv, function (c) { return c.name === 'type=default'; });
   await docArtboard(R, page, cal, pc.comps, pc.vs, {
     title: 'Calendar', description: 'The month grid in the date sheet. Past days are off, today has a ring, the picked day is purple, dots mark days with tee times.',
-    code: ['<div class="cal">…</div> (picker.js)', 'opens from a Select with the date icon, inside a Sheet'],
+    code: ['<div class="swing_cal">…</div> (picker.js)', 'opens from a Select with the date icon, inside a Sheet'],
     colGroups: [{ label: 'example', cols: ['November 2026'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -5794,15 +5984,15 @@ async function buildDatePickerPage(R, notes) {
   }, function (set) {
     var pA = ensureProp(set, 'dow', 'TEXT', 'SAT'), pB = ensureProp(set, 'date', 'TEXT', '7 Nov', 'num'), pM = ensureProp(set, 'mine', 'BOOLEAN', false);
     var pSM = ensureProp(set, 'showMeta', 'BOOLEAN', false), pMT = ensureProp(set, 'meta', 'TEXT', '6 games');
-    Object.keys(sParts).forEach(function (k) { var p = sParts[k]; p.dow.componentPropertyReferences = { characters: pA }; p.num.componentPropertyReferences = { characters: pB }; p.mine.componentPropertyReferences = { visible: pM }; p.meta.componentPropertyReferences = { visible: pSM, characters: pMT }; });
-    set.description = '<button class="date-strip__day [is-mine]" aria-pressed="{selected}"><span class="date-strip__dow">Sat</span><span class="date-strip__num">7 Nov</span>[<span class="date-strip__meta">6 games</span>]</button>. ' +
+    wireKeys(sParts).forEach(function (k) { var p = sParts[k]; p.dow.componentPropertyReferences = { characters: pA }; p.num.componentPropertyReferences = { characters: pB }; p.mine.componentPropertyReferences = { visible: pM }; p.meta.componentPropertyReferences = { visible: pSM, characters: pMT }; });
+    set.description = '<button class="swing_date_strip__day [is-mine]" aria-pressed="{selected}"><span class="swing_date_strip__dow">Sat</span><span class="swing_date_strip__num">7 Nov</span>[<span class="swing_date_strip__meta">6 games</span>]</button>. ' +
       'showMeta + meta = the optional line under the date (B3 dark-300, dark-100 when off), tile grows to 60; in a strip turn it on for every day so heights match. ' +
       'Min 64 x 48, padding 4/12, radius 8, light-100 + 1px light-400. Weekday B3 dark-300 uppercase over the date B2 Semibold dark-500. selected = purple-50 + 1px purple-500, date purple-500 · disabled = 1px light-300, all dark-100 (no rounds that day) · mine = 8px green-500 dot top-right (you are in a round).';
   }, function () {}, R);
   var ps = pairUp(sd, sv, function (c) { return sParts[c.name]; });
   await docArtboard(R, page, sd, ps.comps, ps.vs, {
     title: 'DateStripDay', description: 'One day in the date strip. Days with nothing on are off; the green dot marks a day you are playing.',
-    code: ['<button class="date-strip__day is-mine" aria-pressed="true"><span class="date-strip__dow">Sat</span><span class="date-strip__num">7 Nov</span></button>', 'selected = aria-pressed="true" · disabled = disabled · mine = .is-mine'],
+    code: ['<button class="swing_date_strip__day is-mine" aria-pressed="true"><span class="swing_date_strip__dow">Sat</span><span class="swing_date_strip__num">7 Nov</span></button>', 'selected = aria-pressed="true" · disabled = disabled · mine = .is-mine'],
     colGroups: [{ label: 'example', cols: ['day'] }], rowGroups: [{ label: 'state', rows: ['default', 'selected', 'disabled'] }],
     place: function (v) { return { cg: 0, c: 0, rg: 0, r: ['default', 'selected', 'disabled'].indexOf(v.name.split('=')[1]) }; },
     examples: [{ label: 'selected · mine', items: [{ variant: 'state=selected', props: { mine: true } }] },
@@ -5836,11 +6026,11 @@ async function buildDatePickerPage(R, notes) {
     var ic = dateIcon.createInstance(); cal.appendChild(ic); ic.name = 'icon'; ic.resize(24, 24);
     ic.x = 24; ic.y = (H - 24) / 2; ic.constraints = { horizontal: 'MIN', vertical: 'CENTER' };
     recolorIcon(R, ic, '--dark-400');
-  }, function (s) { s.description = '<div class="date-strip" data-days="14" data-cal>…date-strip__day…</div> (picker.js renders the days; data-cal adds the calendar). light-100, padding 8 24, gap 8, scrolls sideways; type=meta = every day with its meta line (data-meta="6 games|No games|…"), 76 tall; the calendar icon (24, dark-400) stays on the left over a 16px fade. 390 wide, clips. Edit, add or remove DateStripDay instances; keep the cal layer last so it sits on top.'; }, function () {}, R);
+  }, function (s) { s.description = '<div class="swing_date_strip" data-days="14" data-cal>…swing_date_strip__day…</div> (picker.js renders the days; data-cal adds the calendar). light-100, padding 8 24, gap 8, scrolls sideways; type=meta = every day with its meta line (data-meta="6 games|No games|…"), 76 tall; the calendar icon (24, dark-400) stays on the left over a 16px fade. 390 wide, clips. Edit, add or remove DateStripDay instances; keep the cal layer last so it sits on top.'; }, function () {}, R);
   var pt = pairUp(strip, tv, function (c) { return /^type=/.test(c.name); });
   await docArtboard(R, page, strip, pt.comps, pt.vs, {
     title: 'DateStrip', description: 'The Swing date band: pick a day for rounds or tee times. Days without anything are off, the green dot is a day you play.',
-    code: ['<div class="date-strip" data-days="14" data-cal></div>', '<div class="date-strip" data-days="14" data-cal data-meta="6 games|No games|4 games|…"></div>  (type=meta)', 'picker.js fires "pick" { value } · authored days (.date-strip__day) are kept as they are'],
+    code: ['<div class="swing_date_strip" data-days="14" data-cal></div>', '<div class="swing_date_strip" data-days="14" data-cal data-meta="6 games|No games|4 games|…"></div>  (type=meta)', 'picker.js fires "pick" { value } · authored days (.swing_date_strip__day) are kept as they are'],
     colGroups: [{ label: 'example', cols: ['strip'] }], rowGroups: [{ label: 'type', rows: ['default', 'meta'] }],
     place: function (v) { return { cg: 0, c: 0, rg: 0, r: v.name === 'type=meta' ? 1 : 0 }; }
   });
@@ -5872,13 +6062,13 @@ async function buildTimePickerPage(R, notes) {
     parts[comp.name] = { time: t, meta: m };
   }, function (set) {
     var pT = ensureProp(set, 'time', 'TEXT', '07:30'), pSM = ensureProp(set, 'showMeta', 'BOOLEAN', true);
-    Object.keys(parts).forEach(function (k) { parts[k].time.componentPropertyReferences = { characters: pT }; parts[k].meta.componentPropertyReferences = { visible: pSM }; });
-    set.description = '<button class="slot [is-low]" aria-pressed="{selected}"><span class="slot__time">07:30</span><span class="slot__meta">4 left</span></button>. Min 56, padding 8/4, radius 12, light-100 + 1px light-500, time S3 Semibold, meta B3 dark-300. low = orange-700 meta · selected = purple-500, white time, purple-100 meta · disabled = time struck through. Width 108 = 3 per row in 342 (min 88).';
+    wireKeys(parts).forEach(function (k) { parts[k].time.componentPropertyReferences = { characters: pT }; parts[k].meta.componentPropertyReferences = { visible: pSM }; });
+    set.description = '<button class="swing_slot [is-low]" aria-pressed="{selected}"><span class="swing_slot__time">07:30</span><span class="swing_slot__meta">4 left</span></button>. Min 56, padding 8/4, radius 12, light-100 + 1px light-500, time S3 Semibold, meta B3 dark-300. low = orange-700 meta · selected = purple-500, white time, purple-100 meta · disabled = time struck through. Width 108 = 3 per row in 342 (min 88).';
   }, function () {}, R);
   var pv = pairUp(slot, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, slot, pv.comps, pv.vs, {
     title: 'Slot', description: 'A tee time to pick. Few places left turns the count orange; full ones are struck through.',
-    code: ['<button class="slot" aria-pressed="false"><span class="slot__time">07:30</span><span class="slot__meta">4 left</span></button>', 'low = .is-low · selected = aria-pressed="true" · disabled = disabled'],
+    code: ['<button class="swing_slot" aria-pressed="false"><span class="swing_slot__time">07:30</span><span class="swing_slot__meta">4 left</span></button>', 'low = .is-low · selected = aria-pressed="true" · disabled = disabled'],
     colGroups: [{ label: 'low', cols: ['false', 'true'] }], rowGroups: [{ label: 'state', rows: ['default', 'selected', 'disabled'] }],
     place: function (v) { return { cg: 0, c: v.low === 'true' ? 1 : 0, rg: 0, r: ['default', 'selected', 'disabled'].indexOf(v.state) }; }
   });
@@ -5905,11 +6095,11 @@ async function buildTimePickerPage(R, notes) {
         try { it.setProperties(propsFor(it, { time: s[0] })); } catch (e) { /* default */ }
       });
     }
-  }, function (s) { s.description = '<div class="slots-group"><div class="slots-group__head"><i class="icon"></i>Morning</div><div class="slots">…slot…</div></div>. Head B2 Semibold dark-300 with a 16 icon, slots in a grid of min 88 (3 per row at 342), gap 8; groups 16 apart.'; }, function () {}, R);
+  }, function (s) { s.description = '<div class="swing_slots_group"><div class="swing_slots_group__head"><i class="swing_icon"></i>Morning</div><div class="swing_slots">…slot…</div></div>. Head B2 Semibold dark-300 with a 16 icon, slots in a grid of min 88 (3 per row at 342), gap 8; groups 16 apart.'; }, function () {}, R);
   var pg = pairUp(grp, gv, function (c) { return c.name === 'type=default'; });
   await docArtboard(R, page, grp, pg.comps, pg.vs, {
     title: 'SlotsGroup', description: 'Tee times for one part of the day.',
-    code: ['<div class="slots-group"><div class="slots-group__head">…Morning</div><div class="slots"><button class="slot">…</button>…</div></div>', 'grid-template-columns: repeat(auto-fill, minmax(88px, 1fr))'],
+    code: ['<div class="swing_slots_group"><div class="swing_slots_group__head">…Morning</div><div class="swing_slots"><button class="swing_slot">…</button>…</div></div>', 'grid-template-columns: repeat(auto-fill, minmax(88px, 1fr))'],
     colGroups: [{ label: 'example', cols: ['morning'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -5944,11 +6134,11 @@ async function buildTimePickerPage(R, notes) {
     var sb = autoFrame('sep', 'HORIZONTAL', cols); bindNumber(R, sb, 'paddingLeft', '--space-8', 8); bindNumber(R, sb, 'paddingRight', '--space-8', 8);
     sb.appendChild(sep); sep.name = 'text'; sep.textAutoResize = 'WIDTH_AND_HEIGHT';
     await col(['20', '25', '30', '35', '40'], 2);
-  }, function (s) { s.description = '<div class="time-wheel" data-step="5"></div> (picker.js), 24h. Five 44 rows (220), the middle one in a purple-50 band with a 1px purple-100 ring; values H4 dark-200, the picked one purple-600, ":" purple-600. Outer rows fade out. In a Sheet with an Apply button.'; }, function () {}, R);
+  }, function (s) { s.description = '<div class="swing_time_wheel" data-step="5"></div> (picker.js), 24h. Five 44 rows (220), the middle one in a purple-50 band with a 1px purple-100 ring; values H4 dark-200, the picked one purple-600, ":" purple-600. Outer rows fade out. In a Sheet with an Apply button.'; }, function () {}, R);
   var pw = pairUp(wheel, wv, function (c) { return c.name === 'type=default'; });
   await docArtboard(R, page, wheel, pw.comps, pw.vs, {
     title: 'TimeWheel', description: 'Pick an exact time in a sheet: hours and minutes in steps of 5, the value is the row in the purple band.',
-    code: ['<div class="time-wheel" data-step="5"></div>', 'picker.js renders .tw-col / .tw-item / .tw-sep; .tw-presets = quick chips'],
+    code: ['<div class="swing_time_wheel" data-step="5"></div>', 'picker.js renders .swing_tw_col / .swing_tw_item / .swing_tw_sep; .swing_tw_presets = quick chips'],
     colGroups: [{ label: 'example', cols: ['07:30'] }], rowGroups: [{ label: 'type', rows: ['default'] }],
     place: function () { return { cg: 0, c: 0, rg: 0, r: 0 }; }
   });
@@ -5974,11 +6164,11 @@ async function buildSwingPassPage(R, notes) {
     }
     blob('glow (::before)', '--purple-300', 0.8, w * 0.95, h * 1.3, -0.3 * w, h - (h * 1.3 - 0.7 * h));
     blob('deep (::after)', '--purple-700', 0.75, w * 0.8, h * 1.2, w - w * 0.8 + 0.35 * w, -0.65 * h);
-  }, function (s) { s.description = '<div class="swing-pass [swing-pass--static]">…content…</div>. purple-500 base with two blurred blobs: purple-300 at 80% bottom-left, purple-700 at 75% top-right (blur 48). Text on it is light-100. On the web the blobs drift (14s); Figma shows the start frame. Put content on top of the instance; resize it to any size.'; }, function () {}, R);
+  }, function (s) { s.description = '<div class="swing_pass [swing_pass_static]">…content…</div>. purple-500 base with two blurred blobs: purple-300 at 80% bottom-left, purple-700 at 75% top-right (blur 48). Text on it is light-100. On the web the blobs drift (14s); Figma shows the start frame. Put content on top of the instance; resize it to any size.'; }, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return /^shape=/.test(c.name); });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'SwingPass', description: 'The Swing Pass surface: purple with a soft lavender glow and a deep purple corner. Use it behind Swing Pass cards and heroes, with white text.',
-    code: ['<div class="swing-pass">…</div>', '.swing-pass--static = no motion · .is-paused = paused from JS'],
+    code: ['<div class="swing_pass">…</div>', '.swing_pass_static = no motion · .is-paused = paused from JS'],
     colGroups: [{ label: 'shape', cols: ['card', 'hero'] }], rowGroups: [{ label: 'example', rows: ['surface'] }],
     place: function (v) { return { cg: 0, c: v.name === 'shape=hero' ? 1 : 0, rg: 0, r: 0 }; }
   });
@@ -6029,21 +6219,21 @@ async function buildAccordionPage(R, notes) {
     var pB = ensureProp(set, 'body', 'TEXT', 'Yes. Members can bring up to 3 guests per round. Guests pay the visitor green fee at the counter.');
     var pL = ensureProp(set, 'showDivider', 'BOOLEAN', true);
     var pI = ensureProp(set, 'leadIcon', 'INSTANCE_SWAP', lead.id);
-    Object.keys(parts).forEach(function (k) {
+    wireKeys(parts).forEach(function (k) {
       var p = parts[k];
       p.title.componentPropertyReferences = { characters: pT };
       if (p.body) p.body.componentPropertyReferences = { characters: pB };
       p.line.componentPropertyReferences = { visible: pL };
       if (p.lead) p.lead.componentPropertyReferences = { mainComponent: pI };
     });
-    set.description = '<details class="list-acc [open]"><summary class="list-item">[<span class="list-item__lead">…</span>]<span class="list-item__text"><span class="list-item__title">{title}</span></span><i class="icon list-item__chev" …chevron-down></i></summary><div class="list-acc__panel">{body}</div></details> inside .list. ' +
+    set.description = '<details class="swing_list_acc [open]"><summary class="swing_list_item">[<span class="swing_list_item__lead">…</span>]<span class="swing_list_item__text"><span class="swing_list_item__title">{title}</span></span><i class="swing_icon swing_list_item__chev" …chevron-down></i></summary><div class="swing_list_acc__panel">{body}</div></details> inside .swing_list. ' +
       'Summary = a ListItem row (padding 16, title B1 Semibold) with a 20 dark-200 chevron-down that turns when open. Panel B1 dark-300, padding 0 0 16, starts at the text (36 with a lead). The line sits under the summary when closed and under the panel when open; turn it off on the last one.';
   }
   var set = await buildSet(page, 'Accordion', variants, buildVariant, wire, function () {}, R);
   var pv = pairUp(set, variants, function (c) { return parts[c.name]; });
   await docArtboard(R, page, set, pv.comps, pv.vs, {
     title: 'Accordion', description: 'A list row that opens to show more: FAQs, course rules, package details. Native <details>, no JS needed.',
-    code: ['<div class="list"><details class="list-acc"><summary class="list-item">…<i class="icon list-item__chev" …chevron-down></i></summary><div class="list-acc__panel">…</div></details></div>', 'open = [open] · lead = .list-item__lead (panel starts at 36)'],
+    code: ['<div class="swing_list"><details class="swing_list_acc"><summary class="swing_list_item">…<i class="swing_icon swing_list_item__chev" …chevron-down></i></summary><div class="swing_list_acc__panel">…</div></details></div>', 'open = [open] · lead = .swing_list_item__lead (panel starts at 36)'],
     colGroups: [{ label: 'open', cols: ['false', 'true'] }], rowGroups: [{ label: 'lead', rows: ['false', 'true'] }],
     place: function (v) { return { cg: 0, c: v.open === 'true' ? 1 : 0, rg: 0, r: v.lead === 'true' ? 1 : 0 }; }
   });
@@ -6308,9 +6498,14 @@ async function refIcon(R, name, path, size, css, notes, page) {
 async function paintStyleFor(R, css) {
   if (!R.pstyles) {
     R.pstyles = {};
-    (await figma.getLocalPaintStylesAsync()).forEach(function (s) { var k = (s.description || '').split('\n')[0]; if (/^--/.test(k)) R.pstyles[k] = s; });
+    var byName = {};
+    (await figma.getLocalPaintStylesAsync()).forEach(function (s) { var k = (s.description || '').split('\n')[0]; if (/^--/.test(k)) R.pstyles[k] = s; byName[s.name] = s; });
+    R.pstylesByName = byName;
   }
-  return R.pstyles[css] || null;
+  // a style named the way this plugin names it counts even without the CSS name in its description
+  var named = R.pstylesByName && R.pstylesByName[paintName(css)];
+  if (named && PAINT_NAMES[css]) return named;   // the file's own agreed style wins over an older one this plugin made
+  return R.pstyles[css] || named || null;
 }
 async function fillStyle(R, node, css, fallbackCss) {   // gradients live as paint styles
   var st = await paintStyleFor(R, css);
@@ -6324,7 +6519,23 @@ async function effectStyle(R, node, css) {
 function padX(R, f) { bindNumber(R, f, 'paddingLeft', '--page-x', 24); bindNumber(R, f, 'paddingRight', '--page-x', 24); }
 function fillHug(f) { f.layoutSizingHorizontal = 'FILL'; f.layoutSizingVertical = 'HUG'; }
 function hugHug(f) { f.layoutSizingHorizontal = 'HUG'; f.layoutSizingVertical = 'HUG'; }
-function setText(inst, plain) { try { inst.setProperties(propsFor(inst, plain)); } catch (e) { /* keep defaults */ } }
+function setText(inst, plain) {
+  try { inst.setProperties(propsFor(inst, plain)); } catch (e) { /* keep defaults */ }
+  // a swapped icon comes in with its own colour (dark): give it the button's label colour again (Ghais 11 Nov: dark chevron on Join)
+  if (plain && (plain.iconStart || plain.iconEnd)) tintSwappedIcons(inst);
+}
+function tintSwappedIcons(inst) {
+  // Found by structure, not by layer name: a swapped nested instance can come back under the icon's own name.
+  // The colour is copied as a plain colour: a fill that carries the label's variable binding can be refused.
+  var label = inst.findOne && inst.findOne(function (n) { return n.type === 'TEXT' && n.name === 'label'; });
+  var lf = label && label.fills, p0 = lf && lf !== figma.mixed && lf.length ? lf[0] : null;
+  if (!p0 || p0.type !== 'SOLID') return;
+  var paint = { type: 'SOLID', color: { r: p0.color.r, g: p0.color.g, b: p0.color.b }, opacity: p0.opacity == null ? 1 : p0.opacity };
+  (inst.findAll ? inst.findAll(function (n) { return n.type === 'INSTANCE'; }) : []).forEach(function (ic) {
+    var shape = ic.findOne(function (n) { return n.name === 'Icon'; });
+    if (shape) { try { shape.fills = [paint]; } catch (e) { /* keep */ } }
+  });
+}
 
 /* ----- DS parts from Home V5 (components.css: .photo-tile, .pass-upsell, .section-head, .product-card,
    .promo-banner, .help-card, .link-card). Each is its own DS page, like Button, so every screen
@@ -6396,10 +6607,10 @@ async function buildPhotoTilePage(R, notes) {
     pt[comp.name] = l;
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Tee time');
-    Object.keys(pt).forEach(function (k) { pt[k].componentPropertyReferences = { characters: pL }; });
-    s.description = '<a class="photo-tile"><img …><span>{label}</span></a> in .photo-tiles (4 columns, gap 12). Photo ratio 72.75 / 96, radius 8; label B3 Semibold centred. Change the photo by replacing the image fill on "photo".';
+    wireKeys(pt).forEach(function (k) { pt[k].componentPropertyReferences = { characters: pL }; });
+    s.description = '<a class="swing_photo_tile"><img …><span>{label}</span></a> in .swing_photo_tiles (4 columns, gap 12). Photo ratio 72.75 / 96, radius 8; label B3 Semibold centred. Change the photo by replacing the image fill on "photo".';
   }, { description: 'A photo shortcut with a label. Four of them in a row are the Home booking entries.',
-    code: ['<nav class="photo-tiles"><a class="photo-tile" href="#"><img src="…" alt=""><span>Tee time</span></a>…</nav>', '.photo-tiles = 4 columns, gap 12'] });
+    code: ['<nav class="swing_photo_tiles"><a class="swing_photo_tile" href="#"><img src="…" alt=""><span>Tee time</span></a>…</nav>', '.swing_photo_tiles = 4 columns, gap 12'] });
 }
 
 async function buildPassUpsellPage(R, notes) {
@@ -6436,11 +6647,11 @@ async function buildPassUpsellPage(R, notes) {
   }, function (s) {
     var pC = ensureProp(s, 'copy', 'TEXT', 'Get access to exclusive promotions and free of processing fees from only Rp. 300k / month');
     var pA = ensureProp(s, 'cta', 'TEXT', 'Join Swing Pass'), pV = ensureProp(s, 'credits', 'TEXT', '0 credits');
-    Object.keys(pu).forEach(function (k) { var p = pu[k]; p.copy.componentPropertyReferences = { characters: pC }; p.cta.componentPropertyReferences = { characters: pA }; p.value.componentPropertyReferences = { characters: pV }; });
-    s.description = '<div class="pass-upsell"><div class="pass-upsell__top"><div class="pass-upsell__copy">logo + <p>{copy}</p></div><a class="btn-glass">{cta}</a></div><a class="pass-upsell__row">Swing Credits logo · {credits} ›</a></div>. ' +
+    wireKeys(pu).forEach(function (k) { var p = pu[k]; p.copy.componentPropertyReferences = { characters: pC }; p.cta.componentPropertyReferences = { characters: pA }; p.value.componentPropertyReferences = { characters: pV }; });
+    s.description = '<div class="swing_pass_upsell"><div class="swing_pass_upsell__top"><div class="swing_pass_upsell__copy">logo + <p>{copy}</p></div><a class="swing_glass_btn">{cta}</a></div><a class="swing_pass_upsell__row">Swing Credits logo · {credits} ›</a></div>. ' +
       'Radius 16, light-100, elevation-brand-s. Top: gradient-swing-pass, padding 24, gap 32, copy B2 Semibold white. Glass button: glass-fill + 1px glass-line, radius 8, CTA S white. Credits row padding 16, value B3 Semibold.';
   }, { description: 'The Swing Pass upsell on Home, with the member’s Swing Credits underneath.',
-    code: ['<div class="pass-upsell"><div class="pass-upsell__top">…<a class="btn-glass">Join Swing Pass</a></div><a class="pass-upsell__row">…</a></div>', '.btn-glass = glass-fill + glass-line'] });
+    code: ['<div class="swing_pass_upsell"><div class="swing_pass_upsell__top">…<a class="swing_glass_btn">Join Swing Pass</a></div><a class="swing_pass_upsell__row">…</a></div>', '.swing_glass_btn = glass-fill + glass-line'] });
 }
 
 async function buildSectionHeadPage(R, notes) {
@@ -6454,10 +6665,10 @@ async function buildSectionHeadPage(R, notes) {
     sh[comp.name] = t;
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Explore golf\ncourses near you');
-    Object.keys(sh).forEach(function (k) { sh[k].componentPropertyReferences = { characters: pT }; });
-    s.description = '<div class="section-head"><h2 class="promo-banner__title">{title}</h2><a class="btn btn--s btn--tertiary">See all ›</a></div>. Title H5 dark-500, Button S tertiary on the right, bottom aligned, gap 16.';
+    wireKeys(sh).forEach(function (k) { sh[k].componentPropertyReferences = { characters: pT }; });
+    s.description = '<div class="swing_section_head"><h2 class="swing_promo_banner__title">{title}</h2><a class="swing_btn swing_btn_s swing_btn_tertiary">See all ›</a></div>. Title H5 dark-500, Button S tertiary on the right, bottom aligned, gap 16.';
   }, { description: 'A section title with a See all button, above a rail.',
-    code: ['<div class="section-head"><h2 class="promo-banner__title">Explore golf<br>courses near you</h2><a class="btn btn--s btn--tertiary" href="#">See all …</a></div>'] });
+    code: ['<div class="swing_section_head"><h2 class="swing_promo_banner__title">Explore golf<br>courses near you</h2><a class="swing_btn swing_btn_s swing_btn_tertiary" href="#">See all …</a></div>'] });
 }
 
 async function buildProductCardPage(R, notes) {
@@ -6508,15 +6719,15 @@ async function buildProductCardPage(R, notes) {
       loc: ensureProp(s, 'location', 'TEXT', 'Jakarta Timur, Indonesia · 54km away'), promo: ensureProp(s, 'promo', 'TEXT', '10% Off + 1 other promo'),
       cash: ensureProp(s, 'cashback', 'TEXT', 'Up to 2% cashback'), upt: ensureProp(s, 'upsell', 'TEXT', 'Save up to 50% with Swing Pass'),
       showUp: ensureProp(s, 'showUpsell', 'BOOLEAN', true) };
-    Object.keys(pc).forEach(function (k) {
+    wireKeys(pc).forEach(function (k) {
       var p = pc[k];
       ['title', 'was', 'best', 'save', 'loc', 'promo', 'cash', 'upt'].forEach(function (f) { p[f].componentPropertyReferences = { characters: P[f] }; });
       p.up.componentPropertyReferences = { visible: P.showUp };
     });
-    s.description = '<a class="product-card product-card--regular"><span class="product-card__media">photo 160 · chips · upsell strip</span><span class="product-card__body">title · from <s>was</s> · best + save chip · location</span></a>. ' +
-      '242 wide in .product-rail (gap 12, bleeds to the screen edge). Media radius 16; chips top-left 8, 2 apart (promo green-50/green-500, cashback light-300/dark-300); upsell gradient-swing-pass, B4 Semibold white. Title H6 one line, from B4s dark-200 struck, best B2s green-500 + pill save chip green-500, location B4s dark-300.';
+    s.description = '<a class="swing_product_card swing_product_card_regular"><span class="swing_product_card__media">photo 160 · chips · upsell strip</span><span class="swing_product_card__body">title · from <s>was</s> · best + save chip · location</span></a>. ' +
+      '242 wide in .swing_product_rail (gap 12, bleeds to the screen edge). Media radius 16; chips top-left 8, 2 apart (promo green-50/green-500, cashback light-300/dark-300); upsell gradient-swing-pass, B4 Semibold white. Title H6 one line, from B4s dark-200 struck, best B2s green-500 + pill save chip green-500, location B4s dark-300.';
   }, { variants: V,  description: 'A golf course or driving range for a Regular user: photo with promo chips and the Swing Pass strip, then name, price and distance.',
-    code: ['<a class="product-card product-card--regular" href="#"><span class="product-card__media">…</span><span class="product-card__body">…</span></a>', 'in .product-rail · 242 wide'] });
+    code: ['<a class="swing_product_card swing_product_card_regular" href="#"><span class="swing_product_card__media">…</span><span class="swing_product_card__body">…</span></a>', 'in .swing_product_rail · 242 wide'] });
 }
 
 async function buildPromoBannerPage(R, notes) {
@@ -6541,10 +6752,10 @@ async function buildPromoBannerPage(R, notes) {
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Get 100,000 Swing Credits when you refer a friend to join Swing!');
     var pL = ensureProp(s, 'label', 'TEXT', 'No referrals yet'), pS = ensureProp(s, 'sub', 'TEXT', '0 Swing Credits earned');
-    Object.keys(pb).forEach(function (k) { var p = pb[k]; p.t.componentPropertyReferences = { characters: pT }; p.lb.componentPropertyReferences = { characters: pL }; p.sb.componentPropertyReferences = { characters: pS }; });
-    s.description = '<section class="promo-banner"><h2 class="promo-banner__title">{title}</h2><img class="promo-banner__art"><div class="promo-banner__foot"><div class="promo-banner__stat">icon · {label} / {sub}</div><a class="btn btn--s btn--tertiary">…</a></div></section>. Gap 16, title H5, art 3:2 radius 16, label B3s dark-500, sub B4s dark-200.';
+    wireKeys(pb).forEach(function (k) { var p = pb[k]; p.t.componentPropertyReferences = { characters: pT }; p.lb.componentPropertyReferences = { characters: pL }; p.sb.componentPropertyReferences = { characters: pS }; });
+    s.description = '<section class="swing_promo_banner"><h2 class="swing_promo_banner__title">{title}</h2><img class="swing_promo_banner__art"><div class="swing_promo_banner__foot"><div class="swing_promo_banner__stat">icon · {label} / {sub}</div><a class="swing_btn swing_btn_s swing_btn_tertiary">…</a></div></section>. Gap 16, title H5, art 3:2 radius 16, label B3s dark-500, sub B4s dark-200.';
   }, { description: 'The referral banner on Home and Account: title, illustration, what the member earned and an action.',
-    code: ['<section class="promo-banner"><h2 class="promo-banner__title">…</h2><img class="promo-banner__art" src="…" alt=""><div class="promo-banner__foot">…</div></section>'] });
+    code: ['<section class="swing_promo_banner"><h2 class="swing_promo_banner__title">…</h2><img class="swing_promo_banner__art" src="…" alt=""><div class="swing_promo_banner__foot">…</div></section>'] });
 }
 
 async function buildHelpCardPage(R, notes) {
@@ -6568,10 +6779,159 @@ async function buildHelpCardPage(R, notes) {
     hc[comp.name] = { t: t };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Need help with anything else?\nConnect with our call center');
-    Object.keys(hc).forEach(function (k) { hc[k].t.componentPropertyReferences = { characters: pT }; });
-    s.description = '<section class="help-card"><img class="help-card__art"><h2 class="help-card__title">{title}</h2><ul class="help-card__list">…</ul><a class="btn btn--s btn--tertiary">…</a></section>. 218 tall, radius 16, gradient-help-card, agent art at 188/16 (311 x 216, cropped), title H6, list B3 with 12 dots, button bottom-left 16.';
+    wireKeys(hc).forEach(function (k) { hc[k].t.componentPropertyReferences = { characters: pT }; });
+    s.description = '<section class="swing_help_card"><img class="swing_help_card__art"><h2 class="swing_help_card__title">{title}</h2><ul class="swing_help_card__list">…</ul><a class="swing_btn swing_btn_s swing_btn_tertiary">…</a></section>. 218 tall, radius 16, gradient-help-card, agent art at 188/16 (311 x 216, cropped), title H6, list B3 with 12 dots, button bottom-left 16.';
   }, { description: 'The call center card: what support can help with, and a button to reach it.',
-    code: ['<section class="help-card"><img class="help-card__art" src="…" alt=""><h2 class="help-card__title">…</h2><ul class="help-card__list">…</ul><a class="btn btn--s btn--tertiary">…</a></section>'] });
+    code: ['<section class="swing_help_card"><img class="swing_help_card__art" src="…" alt=""><h2 class="swing_help_card__title">…</h2><ul class="swing_help_card__list">…</ul><a class="swing_btn swing_btn_s swing_btn_tertiary">…</a></section>'] });
+}
+
+async function buildFeaturedPromoPage(R, notes) {
+  // components.css .featured-promo (Figma Swing Web App 6131:52581, Ghais 11 Nov)
+  var fp = {}, btnSet = await setFrom('Button', 'Button', buildButton, R, notes);
+  var solidS = byName(btnSet)['size=s, tone=primary, appearance=solid, state=default'];
+  var tick = null;
+  // the first build (11 Nov) had one variant "type=default": rename it so placed instances stay linked
+  var oldPage = figma.root.children.filter(function (p) { return p.name === 'FeaturedPromo'; })[0];
+  if (oldPage) {
+    await oldPage.loadAsync();
+    var oldSet = oldPage.findOne(function (n) { return isUiSet(n, 'FeaturedPromo'); });
+    var oldV = oldSet && oldSet.children.filter(function (c) { return c.name === 'type=default'; })[0];
+    if (oldV && !oldSet.children.some(function (c) { return c.name === 'state=default'; })) oldV.name = 'state=default';
+  }
+  return buildPartPage(R, notes, 'FeaturedPromo', async function (comp, K, page, v) {
+    var claimed = v && v.name === 'state=claimed';
+    comp.layoutMode = 'HORIZONTAL'; comp.counterAxisAlignItems = 'CENTER';
+    comp.resize(343, 80); comp.layoutSizingHorizontal = 'FIXED'; comp.layoutSizingVertical = 'HUG';
+    comp.itemSpacing = 0; comp.clipsContent = true;
+    bindRadius(R, comp, '--radius-12', 12);
+    comp.fills = paintFor(R, '--light-100');
+    comp.strokes = paintFor(R, '--purple-500'); comp.strokeWeight = 1; comp.strokeAlign = 'INSIDE';
+    var strip = autoFrame('pass strip', 'HORIZONTAL', comp); strip.counterAxisAlignItems = 'CENTER';
+    strip.layoutSizingHorizontal = 'HUG'; strip.layoutAlign = 'STRETCH';
+    bindNumber(R, strip, 'paddingLeft', '--space-8', 8); bindNumber(R, strip, 'paddingRight', '--space-8', 8);
+    await fillStyle(R, strip, '--gradient-swing-pass', '--purple-500');
+    await refArt(R, strip, 'ref/img/fp/pass-mark-w.svg?v=1', 20, 20, 'pass mark', notes);
+    var body = autoFrame('body', 'HORIZONTAL', comp); fillHug(body); body.counterAxisAlignItems = 'MAX';
+    ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom'].forEach(function (f) { bindNumber(R, body, f, '--space-16', 16); });
+    bindNumber(R, body, 'itemSpacing', '--space-16', 16);
+    var tx = autoFrame('text', 'VERTICAL', body); fillHug(tx); bindNumber(R, tx, 'itemSpacing', '--space-4', 4);
+    var t = await K.txt(tx, '--type-b2s', '--dark-500', 'Rp 999,000 · Sun & PH PM Deal at Suvarna Jakarta Golf Club', 'title', 'fill');
+    try { t.textTruncation = 'ENDING'; t.maxLines = 2; } catch (e) { /* older API */ }
+    var g = await K.txt(tx, '--type-b3s', '--purple-500', 'Swing Pass Exclusive', 'tag');
+    var st = null;
+    if (claimed) {   // .featured-promo__status: Button S size, Light 300, CTA S Dark 300, green tick 16
+      if (!tick) tick = (await findIcon('Icon/Solid/tick-circle')) || (await iconOrPlaceholder('Icon/Line/tick-circle', page, notes));
+      var sf = autoFrame('status', 'HORIZONTAL', body); sf.counterAxisAlignItems = 'CENTER';
+      sf.resize(80, 32); sf.layoutSizingHorizontal = 'HUG'; sf.layoutSizingVertical = 'FIXED';
+      bindNumber(R, sf, 'paddingLeft', '--space-12', 12); bindNumber(R, sf, 'paddingRight', '--space-12', 12);
+      bindNumber(R, sf, 'itemSpacing', '--space-4', 4); bindRadius(R, sf, '--radius-8', 8);
+      sf.fills = paintFor(R, '--light-300');
+      var ic = tick.createInstance(); sf.appendChild(ic); ic.name = 'tick'; ic.resize(16, 16); recolorIcon(R, ic, '--green-500');
+      st = await K.txt(sf, '--type-cta-s', '--dark-300', 'Active', 'status');
+    } else {
+      var b = solidS.createInstance(); body.appendChild(b); b.name = 'button';
+      setText(b, { label: 'Join', showIconEnd: true, iconEnd: K.I.chev.id });
+      // white chevron, bound to the token (setText's copy is unbound)
+      b.findAll(function (n) { return n.type === 'INSTANCE' && !!n.findOne(function (k) { return k.name === 'Icon'; }); }).forEach(function (ic) { recolorIcon(R, ic, '--light-100'); });
+    }
+    fp[comp.name] = { t: t, g: g, st: st };
+  }, function (s) {
+    var pT = ensureProp(s, 'title', 'TEXT', 'Rp 999,000 · Sun & PH PM Deal at Suvarna Jakarta Golf Club');
+    var pG = ensureProp(s, 'tag', 'TEXT', 'Swing Pass Exclusive');
+    var pS = ensureProp(s, 'status', 'TEXT', 'Active');
+    wireKeys(fp).forEach(function (k) {
+      fp[k].t.componentPropertyReferences = { characters: pT }; fp[k].g.componentPropertyReferences = { characters: pG };
+      if (fp[k].st) fp[k].st.componentPropertyReferences = { characters: pS };
+    });
+    s.description = '<a class="swing_featured_promo"><span class="swing_featured_promo__mark"></span><span class="swing_featured_promo__body"><span class="swing_featured_promo__text"><span class="swing_featured_promo__title">{title}</span><span class="swing_featured_promo__tag">{tag}</span></span><span class="swing_btn swing_btn_s">Join + chevron-right</span></span></a>. ' +
+      'Purple 500 line 1, radius 12; strip padding 0 8 on gradient-swing-pass with the white pass mark 20; body padding 16, gap 16, button on the bottom line; title B2 Semibold 2 lines, tag B3 Semibold Purple 500. ' +
+      'state=claimed: <span class="swing_featured_promo__status">{status}</span> in the button\'s place, 32 tall, padding 0 12, gap 4, radius 8, Light 300, CTA S Dark 300, green tick 16.';
+  }, { variants: [{ name: 'state=default' }, { name: 'state=claimed' }], colLabel: 'state',
+    description: 'One deal that only Swing Pass members get. The whole card is the link; the Join button inside only marks it. Source: Figma Swing Web App 6131:52581.',
+    code: ['<a class="swing_featured_promo" href="…"><span class="swing_featured_promo__mark" aria-hidden="true"></span><span class="swing_featured_promo__body"><span class="swing_featured_promo__text"><span class="swing_featured_promo__title">…</span><span class="swing_featured_promo__tag">Swing Pass Exclusive</span></span><span class="swing_btn swing_btn_s">Join<i class="swing_icon">…chevron-right…</i></span></span></a>', 'state=claimed: <span class="swing_featured_promo__status">Active</span> instead of the button'] });
+}
+
+async function buildCashbackTablePage(R, notes) {
+  // components.css .cashback-table (Figma Swing Web App 271:7933 "Cashback details", Ghais 11 Nov)
+  var ct = {}, W = 343;
+  var ROWS = [['Mon - Fri', '05:00 - 12:00', '10%', '50%'], ['Mon - Fri', '12:00 - 20:00', '8%', '40%'], ['Sat - Sun', '05:00 - 20:00', '8%', '40%']];
+  function lineUnder(f, on) {   // border-bottom 1px light-500
+    f.strokes = paintFor(R, '--light-500'); f.strokeAlign = 'INSIDE';
+    f.strokeTopWeight = 0; f.strokeLeftWeight = 0; f.strokeRightWeight = 0; f.strokeBottomWeight = on ? 1 : 0;
+  }
+  // every column is exactly a third: FILL let Figma give a header cell a different width than the cells under it (Ghais 11 Nov)
+  function cell(parent, name, dir) {
+    var c = autoFrame(name, dir || 'VERTICAL', parent); c.resize(W / 3, 40); c.layoutSizingHorizontal = 'FIXED'; c.layoutSizingVertical = 'FILL';
+    return c;
+  }
+  return buildPartPage(R, notes, 'CashbackTable', async function (comp, K, page, v) {
+    var here = v && v.name === 'current=pass' ? 2 : 1;
+    comp.layoutMode = 'VERTICAL'; comp.resize(W, 300); comp.layoutSizingHorizontal = 'FIXED'; comp.layoutSizingVertical = 'HUG';
+    comp.itemSpacing = 0; comp.fills = paintFor(R, '--light-100');
+    // "You are here" over the current plan
+    var hr = autoFrame('here', 'HORIZONTAL', comp); fillHug(hr); hr.counterAxisAlignItems = 'MAX';
+    var hereText = null;
+    for (var i = 0; i < 3; i++) {
+      var slot = autoFrame('slot ' + (i + 1), 'VERTICAL', hr); slot.resize(W / 3, 1); slot.layoutSizingHorizontal = 'FIXED'; slot.layoutSizingVertical = 'HUG';
+      if (i !== here) continue;
+      var tab = autoFrame('you are here', 'VERTICAL', slot); fillHug(tab); tab.counterAxisAlignItems = 'CENTER';
+      bindNumber(R, tab, 'paddingTop', '--space-8', 8); bindNumber(R, tab, 'paddingBottom', '--space-8', 8);
+      bindNumber(R, tab, 'paddingLeft', '--space-12', 12); bindNumber(R, tab, 'paddingRight', '--space-12', 12);
+      bindNumber(R, tab, 'topLeftRadius', '--radius-8', 8); bindNumber(R, tab, 'topRightRadius', '--radius-8', 8);
+      tab.fills = paintFor(R, '--green-500');
+      hereText = await K.txt(tab, '--type-b2s', '--light-100', 'You are here', 'label', 'fill'); hereText.textAlignHorizontal = 'CENTER';
+    }
+    // the table: header + rows, with the Swing Pass outline on top
+    var tb = autoFrame('table', 'VERTICAL', comp); fillHug(tb); tb.itemSpacing = 0;
+    var head = autoFrame('plans', 'HORIZONTAL', tb); fillHug(head);
+    cell(head, 'corner');
+    var plans = [['Regular Swing players', '--light-200', 'ref/img/cbt/albatross-mark.svg?v=1'], ['Swing Pass members', '--purple-50', 'ref/img/cbt/pass-mark.svg?v=1']];
+    for (var p = 0; p < 2; p++) {
+      var pc = cell(head, p ? 'swing pass' : 'regular'); pc.counterAxisAlignItems = 'CENTER'; pc.primaryAxisAlignItems = 'CENTER';
+      bindNumber(R, pc, 'paddingTop', '--space-16', 16); bindNumber(R, pc, 'paddingBottom', '--space-16', 16);
+      bindNumber(R, pc, 'paddingLeft', '--space-12', 12); bindNumber(R, pc, 'paddingRight', '--space-12', 12);
+      bindNumber(R, pc, 'itemSpacing', '--space-8', 8);
+      pc.fills = paintFor(R, plans[p][1]); lineUnder(pc, true);
+      if (p) bindNumber(R, pc, 'topRightRadius', '--radius-16', 16);
+      var mk = await refArt(R, pc, plans[p][2], 32, 32, 'mark', notes);
+      if (p) { for (var vec of mk.findAll ? mk.findAll(function (n) { return n.type === 'VECTOR'; }) : []) await fillStyle(R, vec, '--gradient-swing-pass', '--purple-500'); }
+      else refTint(R, mk, '--dark-300');
+      var pl = await K.txt(pc, '--type-b2s', '--dark-500', plans[p][0], 'label', 'fill'); pl.textAlignHorizontal = 'CENTER';
+    }
+    for (var r = 0; r < ROWS.length; r++) {
+      var last = r === ROWS.length - 1, row = autoFrame('row ' + (r + 1), 'HORIZONTAL', tb); fillHug(row);
+      var lc = cell(row, 'slot'); lc.primaryAxisAlignItems = 'CENTER'; lineUnder(lc, true);
+      bindNumber(R, lc, 'paddingTop', '--space-16', 16); bindNumber(R, lc, 'paddingBottom', '--space-16', 16);
+      bindNumber(R, lc, 'paddingLeft', '--space-16', 16); bindNumber(R, lc, 'paddingRight', '--space-8', 8);
+      bindNumber(R, lc, 'itemSpacing', '--space-4', 4);
+      await K.txt(lc, '--type-b1s', '--dark-500', ROWS[r][0], 'day', 'fill');
+      await K.txt(lc, '--type-b2', '--dark-300', ROWS[r][1], 'time', 'fill');
+      for (var q = 0; q < 2; q++) {
+        var vc = cell(row, q ? 'swing pass' : 'regular'); vc.counterAxisAlignItems = 'CENTER'; vc.primaryAxisAlignItems = 'CENTER';
+        bindNumber(R, vc, 'paddingTop', '--space-16', 16); bindNumber(R, vc, 'paddingBottom', '--space-16', 16);
+        bindNumber(R, vc, 'paddingLeft', '--space-12', 12); bindNumber(R, vc, 'paddingRight', '--space-12', 12);
+        vc.fills = paintFor(R, q ? '--purple-50' : '--light-200'); lineUnder(vc, !(q && last));
+        if (q && last) bindNumber(R, vc, 'bottomRightRadius', '--radius-16', 16);
+        var val = await K.txt(vc, '--type-h5', q ? '--dark-500' : '--dark-300', ROWS[r][q ? 3 : 2], 'value', 'fill'); val.textAlignHorizontal = 'CENTER';
+        var un = await K.txt(vc, '--type-b2', '--dark-300', 'cashback', 'unit', 'fill'); un.textAlignHorizontal = 'CENTER';
+      }
+    }
+    var ol = figma.createRectangle(); tb.appendChild(ol); ol.name = 'swing pass outline';
+    ol.layoutPositioning = 'ABSOLUTE'; ol.resize(W / 3, tb.height); ol.x = W - W / 3; ol.y = 0;
+    ol.constraints = { horizontal: 'MAX', vertical: 'STRETCH' };
+    ol.fills = []; ol.strokes = paintFor(R, '--purple-500'); ol.strokeWeight = 2; ol.strokeAlign = 'INSIDE';
+    bindNumber(R, ol, 'topRightRadius', '--radius-16', 16); bindNumber(R, ol, 'bottomRightRadius', '--radius-16', 16);
+    ct[comp.name] = { here: hereText };
+  }, function (s) {
+    var pH = ensureProp(s, 'here', 'TEXT', 'You are here');
+    wireKeys(ct).forEach(function (k) { if (ct[k].here) ct[k].here.componentPropertyReferences = { characters: pH }; });
+    s.description = '<table class="swing_cashback_table">: "You are here" tab (Green 500, radius 8 top, B2 Semibold white, padding 8 12) over the current plan; ' +
+      'plan headers mark 32 + B2 Semibold, padding 16 12, gap 8 (Regular Light 200, Swing Pass Purple 50 radius 16 top right); ' +
+      'rows: slot B1 Semibold + B2 Dark 300, padding 16 8 16 16; values H5 + "cashback" B2, padding 16 12; Light 500 line under every row; ' +
+      '2px Purple 500 outline round the Swing Pass column, radius 16 on the right. current=regular / current=pass moves the tab. Three equal columns, 343 wide here.';
+  }, { variants: [{ name: 'current=regular' }, { name: 'current=pass' }], colLabel: 'current',
+    description: 'Cashback a regular player and a Swing Pass member get, per time slot. Source: Figma Swing Web App 271:7933.',
+    code: ['<table class="swing_cashback_table"><thead><tr class="swing_cashback_table__here"><td></td><td><span class="swing_cashback_table__you">You are here</span></td><td></td></tr><tr><td></td><th class="swing_cashback_table__plan">…Regular Swing players</th><th class="swing_cashback_table__plan swing_cashback_table__pass">…Swing Pass members</th></tr></thead><tbody><tr><th scope="row">…day + time…</th><td>…10% cashback…</td><td class="swing_cashback_table__pass">…50% cashback…</td></tr></tbody></table>'] });
 }
 
 async function buildLinkCardPage(R, notes) {
@@ -6593,10 +6953,10 @@ async function buildLinkCardPage(R, notes) {
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'What’s new'), pB = ensureProp(s, 'body', 'TEXT', 'See what we’ve included on version 5.0');
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', info.id);
-    Object.keys(lc).forEach(function (k) { var p = lc[k]; p.t.componentPropertyReferences = { characters: pT }; p.b.componentPropertyReferences = { characters: pB }; p.ic.componentPropertyReferences = { mainComponent: pI }; });
-    s.description = '<a class="link-card"><i class="icon link-card__icon"></i><span class="link-card__text"><span class="link-card__title">{title}</span><span class="link-card__body">{body}</span></span><i class="icon link-card__chev"></i></a>. 242 wide in a .link-rail column (gap 8, columns 12 apart). Padding 12 16, radius 16, light-200, icon 24, title B2 Semibold, body B3 dark-300.';
+    wireKeys(lc).forEach(function (k) { var p = lc[k]; p.t.componentPropertyReferences = { characters: pT }; p.b.componentPropertyReferences = { characters: pB }; p.ic.componentPropertyReferences = { mainComponent: pI }; });
+    s.description = '<a class="swing_link_card"><i class="swing_icon swing_link_card__icon"></i><span class="swing_link_card__text"><span class="swing_link_card__title">{title}</span><span class="swing_link_card__body">{body}</span></span><i class="swing_icon swing_link_card__chev"></i></a>. 242 wide in a .swing_link_rail column (gap 8, columns 12 apart). Padding 12 16, radius 16, light-200, icon 24, title B2 Semibold, body B3 dark-300.';
   }, { description: 'A link with an icon, title and one line of help. Two columns of three scroll sideways at the bottom of Home.',
-    code: ['<section class="link-rail"><div class="link-rail__col"><a class="link-card" href="#">…</a>…</div>…</section>'] });
+    code: ['<section class="swing_link_rail"><div class="swing_link_rail__col"><a class="swing_link_card" href="#">…</a>…</div>…</section>'] });
 }
 
 /* ----- Screen: Home (ref/home.html) — only instances of DS parts, plus the screen's own photos and art ----- */
@@ -6643,6 +7003,11 @@ async function nameInstances(roots) {
       if (n.name !== mc.name && !/^[\w-]+=/.test(n.name)) continue;   // a name someone chose (avatar, edit) stays
       var setName = mc.parent && mc.parent.type === 'COMPONENT_SET' ? mc.parent.name : mc.name;
       var variant = mc.parent && mc.parent.type === 'COMPONENT_SET' && mc.name !== 'type=default' ? mc.name : '';
+      // a split set already says its kind (swing_btn_primary): leave tone=primary out of the layer name
+      if (variant) variant = variant.split(', ').filter(function (kv) {
+        var p = kv.split('=');
+        return !(SPLIT_PROPS.indexOf(p[0]) >= 0 && new RegExp('_' + snakeName(p[1]) + '$').test(setName));
+      }).join(', ');
       n.name = setName.split('/').pop() + (variant ? ' · ' + variant : '');
     }
   }
@@ -6778,7 +7143,7 @@ async function buildProfileHeadPage(R, notes) {
     var ed = byName(ibSet)['size=s, tone=neutral, appearance=tertiary, state=default'].createInstance(); comp.appendChild(ed); ed.name = 'edit'; ed.x = 88; ed.y = 96;
     setText(ed, { icon: pencil.id });
   }, function (s) {
-    s.description = '<div class="profile-head"><img class="profile-head__banner"><span class="avatar avatar--l profile-head__avatar">AL</span><button class="btn btn--s btn--icon btn--tertiary btn--neutral profile-head__edit">pencil</button></div>. Banner 80 high (purple-100 under the photo); the avatar and the edit button hang 48 below it. The component is 128 high so that overhang is inside it (Figma clips outside a frame): content under it starts 16 down, which is the 64 of .page--profile on the web. Change the photo on "banner", the initials on "avatar".';
+    s.description = '<div class="swing_profile_head"><img class="swing_profile_head__banner"><span class="swing_avatar swing_avatar_l swing_profile_head__avatar">AL</span><button class="swing_btn swing_btn_s swing_btn_icon swing_btn_tertiary swing_btn_neutral swing_profile_head__edit">pencil</button></div>. Banner 80 high (purple-100 under the photo); the avatar and the edit button hang 48 below it. The component is 128 high so that overhang is inside it (Figma clips outside a frame): content under it starts 16 down, which is the 64 of .page--profile on the web. Change the photo on "banner", the initials on "avatar".';
   }, { description: 'The Account header: banner photo, Avatar L and the edit button.' });
 }
 
@@ -6852,7 +7217,7 @@ async function buildAccountScreen(R, notes) {
   var nav = byName(navSet)['items=3'].createInstance(); scr.appendChild(nav); nav.layoutSizingHorizontal = 'FILL';
   var NI = byName(navItems), tabs = [];
   var navInsts = nav.findAll(function (n) { return n.type === 'INSTANCE'; });
-  for (var ti = 0; ti < navInsts.length; ti++) { var tm = await navInsts[ti].getMainComponentAsync(); if (tm && tm.parent === navItems) tabs.push(navInsts[ti]); }
+  for (var ti = 0; ti < navInsts.length; ti++) { var tm = await navInsts[ti].getMainComponentAsync(); if (tm && inPart(tm, navItems)) tabs.push(navInsts[ti]); }
   if (tabs.length === 3) { tabs[0].swapComponent(NI['type=tab, state=default']); tabs[2].swapComponent(NI['type=tab, state=active']); }
 
   /* ---------- Components on this screen ---------- */
@@ -6896,8 +7261,8 @@ async function buildNotifRowPage(R, notes) {
   }, function (s) {
     var pD = ensureProp(s, 'date', 'TEXT', '21/11'), pT = ensureProp(s, 'title', 'TEXT', 'Tio Saputra has made his first booking! Check your Swing Credits reward here.');
     var pU = ensureProp(s, 'unread', 'BOOLEAN', true);
-    Object.keys(nr).forEach(function (k) { nr[k].d.componentPropertyReferences = { characters: pD }; nr[k].t.componentPropertyReferences = { characters: pT }; nr[k].slot.componentPropertyReferences = { visible: pU }; });
-    s.description = '<li><a class="notif-row [is-unread]"><span class="avatar avatar--s">TS</span><span class="notif-row__text"><span class="notif-row__date">21/11</span><span class="notif-row__title">…</span></span><span class="indicator"></span></a></li> in .notif-list (white, padding 16 page-x). unread = .is-unread (shows the indicator). Every row has the light-500 line under it.';
+    wireKeys(nr).forEach(function (k) { nr[k].d.componentPropertyReferences = { characters: pD }; nr[k].t.componentPropertyReferences = { characters: pT }; nr[k].slot.componentPropertyReferences = { visible: pU }; });
+    s.description = '<li><a class="swing_notif_row [is-unread]"><span class="swing_avatar swing_avatar_s">TS</span><span class="swing_notif_row__text"><span class="swing_notif_row__date">21/11</span><span class="swing_notif_row__title">…</span></span><span class="swing_indicator"></span></a></li> in .swing_notif_list (white, padding 16 page-x). unread = .is-unread (shows the indicator). Every row has the light-500 line under it.';
   }, { description: 'One notification: avatar, date, title and the unread dot.' });
 }
 
@@ -6950,11 +7315,11 @@ async function buildUpdatesScreen(R, notes) {
   await screenList(R, page, scr, 'Updates', async function (row) {
     var ab = one(byName(appBar)['type=center, scrolled=false'], { title: 'Updates', showActions: true });
     var abt = ab.findOne(function (n) { return n.type === 'TEXT' && n.name === 'title'; }); if (abt && h3) await abt.setTextStyleIdAsync(h3.id);
-    await row('AppBar', partSrc('AppBar', PG) + ' · type=center with the title set to H3 on this instance (.appbar--center .appbar--root), back + more', [ab]);
+    await row('AppBar', partSrc('AppBar', PG) + ' · type=center with the title set to H3 on this instance (.swing_appbar_center .swing_appbar_root), back + more', [ab]);
     await row('Tag', partSrc('Tag', PG) + ' · tone=neutral, size=m, solid icon + counter; Notifications selected', [one(TB['tone=neutral, size=m, state=selected'], { label: 'Notifications', showIconStart: true, iconStart: TI['notification-bell'].id, showCounter: true }), one(TB['tone=neutral, size=m, state=default'], { label: 'Promotions', showIconStart: true, iconStart: TI['price-tag-rotate-right'].id, showCounter: true })]);
     await row('NotifRow', partSrc('NotifRow', PG) + ' · Avatar S, date, title, unread dot; used 2×', [P.row]);
   });
-  notes.push('Updates: built from stat.chara.id/swing/ref/updates.html. The AppBar has no centred-H3 variant (.appbar--center .appbar--root), so the title text style is set to H3 on the instance; the tag row is clipped at the edge instead of scrolling.');
+  notes.push('Updates: built from stat.chara.id/swing/ref/updates.html. The AppBar has no centred-H3 variant (.swing_appbar_center .swing_appbar_root), so the title text style is set to H3 on the instance; the tag row is clipped at the edge instead of scrolling.');
   return { set: scr, count: 3, label: 'screen from 3 parts' };
 }
 
@@ -6992,8 +7357,8 @@ async function buildCreditCardPage(R, notes) {
     cc[comp.name] = { val: val, et: et };
   }, function (s) {
     var pV = ensureProp(s, 'credits', 'TEXT', '1,000,000'), pE = ensureProp(s, 'expiry', 'TEXT', '1,000,000 credits will expire on 31 Dec 2024');
-    Object.keys(cc).forEach(function (k) { cc[k].val.componentPropertyReferences = { characters: pV }; cc[k].et.componentPropertyReferences = { characters: pE }; });
-    s.description = '<div class="credit-head" style="--art:url(banner)"><div class="credit-card">logo, .credit-card__value (H2), .credit-card__expiry (B4 + time-sand 10), .btn.btn--s.btn--block Redeem</div></div>. Head 108; the card sits 32 down with page-x sides, white, light-500 line, radius 16, Elevation 2. The component holds the card\'s overhang below the head; on the web .credit-body clears it with 92 top padding.';
+    wireKeys(cc).forEach(function (k) { cc[k].val.componentPropertyReferences = { characters: pV }; cc[k].et.componentPropertyReferences = { characters: pE }; });
+    s.description = '<div class="swing_credit_head" style="--art:url(banner)"><div class="swing_credit_card">logo, .swing_credit_card__value (H2), .swing_credit_card__expiry (B4 + time-sand 10), .swing_btn.btn--s.btn--block Redeem</div></div>. Head 108; the card sits 32 down with page-x sides, white, light-500 line, radius 16, Elevation 2. The component holds the card\'s overhang below the head; on the web .swing_credit_body clears it with 92 top padding.';
   }, { description: 'Swing Credits balance on its banner, with the redeem button.' });
 }
 async function buildAdsRowPage(R, notes) {
@@ -7031,14 +7396,14 @@ async function buildAdsRowPage(R, notes) {
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Always use Swing Credits'), pB = ensureProp(s, 'body', 'TEXT', 'Credits will always be used during payments');
     var pA = ensureProp(s, 'amount', 'TEXT', '+ 5,000'), pW = ensureProp(s, 'word', 'TEXT', 'earned'), pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', hIcon.id);
-    Object.keys(ar).forEach(function (k) {
+    wireKeys(ar).forEach(function (k) {
       var p = ar[k];
       p.t.componentPropertyReferences = { characters: pT }; p.bd.componentPropertyReferences = { characters: pB };
       if (p.amt) { p.amt.componentPropertyReferences = { characters: pA }; p.word.componentPropertyReferences = { characters: pW }; }
       if (p.ic) p.ic.componentPropertyReferences = { mainComponent: pI };
     });
-    s.description = '<label class="ads-row"><img 22><span class="ads-row__text"><span class="ads-row__title">…</span><span class="ads-row__body">…</span></span><input class="switch switch--s"></label> in .ads-list. Min 48, gap 14, text 12 top and bottom, light-500 line under it (the bottom stroke); the last row in a list has none, so set that instance\'s bottom stroke to 0. The DS Switch has one size (40 x 24); .switch--s is 32 x 18. ' +
-      'end=plus / end=minus = the history row (<a class="ads-row">…<span class="ads-row__end"><span><span class="ads-row__amount ads-row__amount--plus|minus">+ 5,000</span> earned</span><img chev-16></span>): swappable icon (Icon/Ref/sc-h-*), amount B3 Semibold green-500 / red-500, word B3 dark-300, chevron 16. The web puts a space between amount and word; here it is a 4 gap.';
+    s.description = '<label class="swing_ads_row"><img 22><span class="swing_ads_row__text"><span class="swing_ads_row__title">…</span><span class="swing_ads_row__body">…</span></span><input class="swing_switch swing_switch_s"></label> in .swing_ads_list. Min 48, gap 14, text 12 top and bottom, light-500 line under it (the bottom stroke); the last row in a list has none, so set that instance\'s bottom stroke to 0. The DS Switch has one size (40 x 24); .swing_switch_s is 32 x 18. ' +
+      'end=plus / end=minus = the history row (<a class="swing_ads_row">…<span class="swing_ads_row__end"><span><span class="swing_ads_row__amount swing_ads_row__amount_plus|minus">+ 5,000</span> earned</span><img chev-16></span>): swappable icon (Icon/Ref/sc-h-*), amount B3 Semibold green-500 / red-500, word B3 dark-300, chevron 16. The web puts a space between amount and word; here it is a 4 gap.';
   }, { description: 'An ADS row: icon, title, body, and a switch (settings) or an amount + chevron (history).', variants: AR_V });
 }
 async function buildRewardCardPage(R, notes) {
@@ -7058,8 +7423,8 @@ async function buildRewardCardPage(R, notes) {
     rc[comp.name] = { t: t, sh: sh, p: p };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Honma TR20V Irons'), pS = ensureProp(s, 'shop', 'TEXT', 'Juragan Golf'), pP = ensureProp(s, 'price', 'TEXT', '650,000 Swing Credits');
-    Object.keys(rc).forEach(function (k) { rc[k].t.componentPropertyReferences = { characters: pT }; rc[k].sh.componentPropertyReferences = { characters: pS }; rc[k].p.componentPropertyReferences = { characters: pP }; });
-    s.description = '<a class="reward-card"><img class="reward-card__img"><span class="reward-card__text"><span class="reward-card__title">…</span><span class="reward-card__shop">…</span></span><span class="reward-card__price"><img 10>…</span></a> in .reward-grid (2 columns, gap 16). Photo 156 high, light-500 line, radius 8. Change the photo on "photo".';
+    wireKeys(rc).forEach(function (k) { rc[k].t.componentPropertyReferences = { characters: pT }; rc[k].sh.componentPropertyReferences = { characters: pS }; rc[k].p.componentPropertyReferences = { characters: pP }; });
+    s.description = '<a class="swing_reward_card"><img class="swing_reward_card__img"><span class="swing_reward_card__text"><span class="swing_reward_card__title">…</span><span class="swing_reward_card__shop">…</span></span><span class="swing_reward_card__price"><img 10>…</span></a> in .swing_reward_grid (2 columns, gap 16). Photo 156 high, light-500 line, radius 8. Change the photo on "photo".';
   }, { description: 'A reward you can redeem with Swing Credits.' });
 }
 async function buildAskBoxPage(R, notes) {
@@ -7080,8 +7445,8 @@ async function buildAskBoxPage(R, notes) {
     ab[comp.name] = t;
   }, function (s) {
     var pT = ensureProp(s, 'text', 'TEXT', 'Can’t find the rewards you’re looking for? Simply tell us, and we’ll try to add it into our rewards list.');
-    Object.keys(ab).forEach(function (k) { ab[k].componentPropertyReferences = { characters: pT }; });
-    s.description = '<div class="ask-box"><img 48><p class="ask-box__text">…</p><a class="btn btn--s">Request reward</a></div>. light-300, radius 16, padding 24, gap 16, centred; text H6 dark-200 with 24 side padding.';
+    wireKeys(ab).forEach(function (k) { ab[k].componentPropertyReferences = { characters: pT }; });
+    s.description = '<div class="swing_ask_box"><img 48><p class="swing_ask_box__text">…</p><a class="swing_btn swing_btn_s">Request reward</a></div>. light-300, radius 16, padding 24, gap 16, centred; text H6 dark-200 with 24 side padding.';
   }, { description: 'Ask for a reward that is not in the list.' });
 }
 
@@ -7156,7 +7521,7 @@ async function buildSwingCreditsScreen(R, notes) {
     await row('RewardCard', partSrc('RewardCard', PG) + ' · used 10× in 2 columns', [P.reward]);
     await row('AskBox', partSrc('AskBox', PG) + ' · request a reward', [P.ask]);
   });
-  notes.push('Swing Credits: built from stat.chara.id/swing/ref/swing-credits.html. Differences from the web: the DS Switch has one size (40 x 24), the web row uses .switch--s (32 x 18); the reward grid is rows of two instead of a CSS grid.');
+  notes.push('Swing Credits: built from stat.chara.id/swing/ref/swing-credits.html. Differences from the web: the DS Switch has one size (40 x 24), the web row uses .swing_switch_s (32 x 18); the reward grid is rows of two instead of a CSS grid.');
   return { set: scr, count: 6, label: 'screen from 6 parts' };
 }
 
@@ -7219,7 +7584,7 @@ async function buildCreditsHistoryScreen(R, notes) {
     await row('Tag', partSrc('Tag', PG) + ' · tone=ads, size=ads (28): All selected', [one(TB['tone=ads, size=ads, state=selected'], { label: 'All' }), one(TB['tone=ads, size=ads, state=default'], { label: 'Credits earned' })]);
     await row('AdsRow', partSrc('AdsRow', PG) + ' · end=plus / end=minus, icon swapped per row; the last row in a group has no line', [one(RB['end=plus']), one(RB['end=minus'])]);
   });
-  notes.push('Swing Credits history: built from stat.chara.id/swing/ref/swing-credits-history.html. Date groups are 16 apart, which is what the web renders (.sections > .page outranks .page--groups, whose 32 never applies); the filter tags are static, so the list shows All.');
+  notes.push('Swing Credits history: built from stat.chara.id/swing/ref/swing-credits-history.html. Date groups are 16 apart, which is what the web renders (.sections > .swing_page outranks .page--groups, whose 32 never applies); the filter tags are static, so the list shows All.');
   return { set: scr, count: 3, label: 'screen from 3 parts' };
 }
 
@@ -7319,8 +7684,8 @@ async function buildMailFootPage(R, notes) {
     mf[comp.name] = cp;
   }, function (s) {
     var pC = ensureProp(s, 'copyright', 'TEXT', 'Copyright © 2026 PT. Silverwing Wisteria Indosport');
-    Object.keys(mf).forEach(function (k) { mf[k].componentPropertyReferences = { characters: pC }; });
-    s.description = '<footer class="mail__foot"><div class="mail__brand"><img albatross 24><span class="mail__site">www.getswing.app</span><span class="mail__copy">…</span></div>[<div class="mail__stores">App Store 72 + Google Play 81</div>]</footer>. Centred, padding 16, gap 16; brand gap 4, site B3 Semibold, copyright B4, both dark-200. stores=true adds the store badges (Swing Pass emails).';
+    wireKeys(mf).forEach(function (k) { mf[k].componentPropertyReferences = { characters: pC }; });
+    s.description = '<footer class="swing_mail__foot"><div class="swing_mail__brand"><img albatross 24><span class="swing_mail__site">www.getswing.app</span><span class="swing_mail__copy">…</span></div>[<div class="swing_mail__stores">App Store 72 + Google Play 81</div>]</footer>. Centred, padding 16, gap 16; brand gap 4, site B3 Semibold, copyright B4, both dark-200. stores=true adds the store badges (Swing Pass emails).';
   }, { description: 'Email footer: Swing mark, site, copyright, and optionally the store badges.', variants: MF_V });
 }
 
@@ -7412,8 +7777,8 @@ async function buildCodeCardPage(R, notes) {
     cc[comp.name] = { lb: lb, av: av, code: code };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'From referrals, you\u2019ve earned'), pA = ensureProp(s, 'amount', 'TEXT', '1,450,000'), pC = ensureProp(s, 'code', 'TEXT', 'ALVLIA123');
-    Object.keys(cc).forEach(function (k) { cc[k].lb.componentPropertyReferences = { characters: pL }; cc[k].av.componentPropertyReferences = { characters: pA }; cc[k].code.componentPropertyReferences = { characters: pC }; });
-    s.description = '<section class="code-card"><div class="code-card__top"><p class="code-card__label">…</p><p class="code-card__amount"><img swing-credits 32>{amount}</p></div><div class="code-card__band"><p class="code-card__code">{code}</p><div class="code-card__actions">btn--s Copy, btn--s Share</div></div></section>. Radius 16, light-500 line, purple-50 band, Elevation brand.';
+    wireKeys(cc).forEach(function (k) { cc[k].lb.componentPropertyReferences = { characters: pL }; cc[k].av.componentPropertyReferences = { characters: pA }; cc[k].code.componentPropertyReferences = { characters: pC }; });
+    s.description = '<section class="swing_code_card"><div class="swing_code_card__top"><p class="swing_code_card__label">…</p><p class="swing_code_card__amount"><img swing-credits 32>{amount}</p></div><div class="swing_code_card__band"><p class="swing_code_card__code">{code}</p><div class="swing_code_card__actions">swing_btn_s Copy, swing_btn_s Share</div></div></section>. Radius 16, light-500 line, purple-50 band, Elevation brand.';
   }, { description: 'Referral rewards and code, with Copy and Share.' });
 }
 
@@ -7439,8 +7804,8 @@ async function buildStatPanelPage(R, notes) {
     sp[comp.name] = p;
   }, function (s) {
     var P = [[ensureProp(s, 'value1', 'TEXT', '0'), ensureProp(s, 'label1', 'TEXT', 'Joined Swing')], [ensureProp(s, 'value2', 'TEXT', '0'), ensureProp(s, 'label2', 'TEXT', 'Made first booking')]];
-    Object.keys(sp).forEach(function (k) { sp[k].forEach(function (x, i) { x[0].componentPropertyReferences = { characters: P[i][0] }; x[1].componentPropertyReferences = { characters: P[i][1] }; }); });
-    s.description = '<div class="stat-panel"><div class="stat-panel__item"><span class="stat-panel__value [is-zero]">0</span><span class="stat-panel__label">…</span></div><span class="stat-panel__divider"></span>…</div>. light-200, radius 16, 12/16, gap 12. zero=true = .is-zero (value dark-100); otherwise purple-500.';
+    wireKeys(sp).forEach(function (k) { sp[k].forEach(function (x, i) { x[0].componentPropertyReferences = { characters: P[i][0] }; x[1].componentPropertyReferences = { characters: P[i][1] }; }); });
+    s.description = '<div class="swing_stat_panel"><div class="swing_stat_panel__item"><span class="swing_stat_panel__value [is-zero]">0</span><span class="swing_stat_panel__label">…</span></div><span class="swing_stat_panel__divider"></span>…</div>. light-200, radius 16, 12/16, gap 12. zero=true = .is-zero (value dark-100); otherwise purple-500.';
   }, { description: 'Two numbers side by side with a divider.', variants: V });
 }
 
@@ -7471,8 +7836,8 @@ async function buildStepCardPage(R, notes) {
     sc[comp.name] = { t: t, b: b };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', RE_STEPS[0][0]), pB = ensureProp(s, 'body', 'TEXT', RE_STEPS[0][1]);
-    Object.keys(sc).forEach(function (k) { sc[k].t.componentPropertyReferences = { characters: pT }; sc[k].b.componentPropertyReferences = { characters: pB }; });
-    s.description = '<li class="step-card"><span class="step-card__art" style="--step-art:url(step-art-N.svg)"><i class="icon">…</i></span><span class="step-card__text"><span class="step-card__title">…</span><span class="step-card__body">…</span></span></li> in .step-rail (gap 32, a 2px light-500 line through the art middle). step = which art and icon; title and body are props (the default text is step 1, so set them per instance).';
+    wireKeys(sc).forEach(function (k) { sc[k].t.componentPropertyReferences = { characters: pT }; sc[k].b.componentPropertyReferences = { characters: pB }; });
+    s.description = '<li class="swing_step_card"><span class="swing_step_card__art" style="--step-art:url(step-art-N.svg)"><i class="swing_icon">…</i></span><span class="swing_step_card__text"><span class="swing_step_card__title">…</span><span class="swing_step_card__body">…</span></span></li> in .swing_step_rail (gap 32, a 2px light-500 line through the art middle). step = which art and icon; title and body are props (the default text is step 1, so set them per instance).';
   }, { description: 'A how-it-works step: art tile with icon, title, body.', variants: V });
 }
 
@@ -7505,8 +7870,8 @@ async function buildFaqItemPage(R, notes) {
     fq[comp.name] = p;
   }, function (s) {
     var pQ = ensureProp(s, 'question', 'TEXT', RE_FAQ[0][0]), pA = ensureProp(s, 'answer', 'TEXT', RE_FAQ[0][1]);
-    Object.keys(fq).forEach(function (k) { fq[k].q.componentPropertyReferences = { characters: pQ }; if (fq[k].a) fq[k].a.componentPropertyReferences = { characters: pA }; });
-    s.description = '<details class="faq__item" [open]><summary class="faq__q"><span>{question}</span><i chevron-down 16></i></summary><p class="faq__a">{answer}</p></details> in .faq (white, light-500 line, radius 16, 0 / 24). Line under each item; set the last instance\'s bottom stroke to 0. open=true: question purple-500, chevron turned, answer shown (right padding 28 = 16 + 12). ads=true = .faq--ads (Swing Pass): the ADS chevron in dark-200.';
+    wireKeys(fq).forEach(function (k) { fq[k].q.componentPropertyReferences = { characters: pQ }; if (fq[k].a) fq[k].a.componentPropertyReferences = { characters: pA }; });
+    s.description = '<details class="swing_faq__item" [open]><summary class="swing_faq__q"><span>{question}</span><i chevron-down 16></i></summary><p class="swing_faq__a">{answer}</p></details> in .swing_faq (white, light-500 line, radius 16, 0 / 24). Line under each item; set the last instance\'s bottom stroke to 0. open=true: question purple-500, chevron turned, answer shown (right padding 28 = 16 + 12). ads=true = .swing_faq_ads (Swing Pass): the ADS chevron in dark-200.';
   }, { description: 'A FAQ question that opens to its answer.', variants: V });
 }
 
@@ -7610,8 +7975,8 @@ async function buildCodeHeroPage(R, notes) {
     ch[comp.name] = { l: l, c: c };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Alvin\u2019s referral code'), pC = ensureProp(s, 'code', 'TEXT', 'ALVLIA123');
-    Object.keys(ch).forEach(function (k) { ch[k].l.componentPropertyReferences = { characters: pL }; ch[k].c.componentPropertyReferences = { characters: pC }; });
-    s.description = '<section class="code-hero"><p class="code-hero__label">…</p><p class="code-hero__code">…</p></section>. Centred, padding 24, gap 4, radius 16, white, Elevation brand; label B2 Semibold dark-300, code H1 purple-500.';
+    wireKeys(ch).forEach(function (k) { ch[k].l.componentPropertyReferences = { characters: pL }; ch[k].c.componentPropertyReferences = { characters: pC }; });
+    s.description = '<section class="swing_code_hero"><p class="swing_code_hero__label">…</p><p class="swing_code_hero__code">…</p></section>. Centred, padding 24, gap 4, radius 16, white, Elevation brand; label B2 Semibold dark-300, code H1 purple-500.';
   }, { description: 'A big referral code card for the shared story.' });
 }
 
@@ -7636,8 +8001,8 @@ async function buildKvRowPage(R, notes) {
     kv[comp.name] = p;
   }, function (s) {
     var pK = ensureProp(s, 'key', 'TEXT', 'Join date'), pV = ensureProp(s, 'value', 'TEXT', '01 Jan 2025');
-    Object.keys(kv).forEach(function (n) { kv[n].k.componentPropertyReferences = { characters: pK }; kv[n].v.componentPropertyReferences = { characters: pV }; });
-    s.description = '<div class="kv"><dt>{key}</dt><dd [class="kv__pay"]>{value}</dd></div> in .kv-list (column, gap 8). Space-between, gap 16; key B3 Semibold dark-300, value B3 dark-300 right-aligned. pay=true = .kv__pay: a 14 payment logo (radius 4, replace the image fill) before the value.';
+    wireKeys(kv).forEach(function (n) { kv[n].k.componentPropertyReferences = { characters: pK }; kv[n].v.componentPropertyReferences = { characters: pV }; });
+    s.description = '<div class="swing_kv"><dt>{key}</dt><dd [class="swing_kv__pay"]>{value}</dd></div> in .swing_kv_list (column, gap 8). Space-between, gap 16; key B3 Semibold dark-300, value B3 dark-300 right-aligned. pay=true = .swing_kv__pay: a 14 payment logo (radius 4, replace the image fill) before the value.';
   }, { description: 'A label and value on one line; pay=true adds a payment logo.', variants: V });
 }
 
@@ -7787,8 +8152,8 @@ async function buildPassCardPage(R, notes) {
     pc[comp.name] = { bt: bt, nm: nm, mt: mt };
   }, function (s) {
     var pB = ensureProp(s, 'badge', 'TEXT', 'BETA'), pN = ensureProp(s, 'name', 'TEXT', 'Ronaldo Nazario'), pM = ensureProp(s, 'meta', 'TEXT', 'N235G-4GG34 \u2022 Active until 31 Dec 2025');
-    Object.keys(pc).forEach(function (k) { pc[k].bt.componentPropertyReferences = { characters: pB }; pc[k].nm.componentPropertyReferences = { characters: pN }; pc[k].mt.componentPropertyReferences = { characters: pM }; });
-    s.description = '<div class="pass-card [pass-card--enlarge]">mark, .pass-card__top (wordmark + .pass-card__badge), .pass-card__who (photo 48 + name H5 + meta B4s)</div>. 208 tall, padding 24, radius 8, glass fill + 1px glass line, Elevation pass card, white text; sits on the Swing Pass band. enlarge=true leaves 38 at the bottom for the floating "Enlarge card" button. The web blurs what is behind it (backdrop-filter 100); Figma has no backdrop blur on a fill, so the glass is the gradient only.';
+    wireKeys(pc).forEach(function (k) { pc[k].bt.componentPropertyReferences = { characters: pB }; pc[k].nm.componentPropertyReferences = { characters: pN }; pc[k].mt.componentPropertyReferences = { characters: pM }; });
+    s.description = '<div class="swing_pass_card [swing_pass_card_enlarge]">mark, .swing_pass_card__top (wordmark + .swing_pass_card__badge), .swing_pass_card__who (photo 48 + name H5 + meta B4s)</div>. 208 tall, padding 24, radius 8, glass fill + 1px glass line, Elevation pass card, white text; sits on the Swing Pass band. enlarge=true leaves 38 at the bottom for the floating "Enlarge card" button. The web blurs what is behind it (backdrop-filter 100); Figma has no backdrop blur on a fill, so the glass is the gradient only.';
   }, { description: 'The Swing Pass membership card, on the purple band.', variants: V });
 }
 
@@ -7835,12 +8200,12 @@ async function buildSaveCardPage(R, notes) {
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Since 01 Jan 2025, you\u2019ve saved'), pV = ensureProp(s, 'value', 'TEXT', 'Rp. 50,000,000'), pK = ensureProp(s, 'link', 'TEXT', 'See how you\u2019ve saved this much');
     var pO = ensureProp(s, 'without', 'TEXT', '5,000,000'), pW = ensureProp(s, 'with', 'TEXT', '10,000,000');
-    Object.keys(sv).forEach(function (k) {
+    wireKeys(sv).forEach(function (k) {
       var p = sv[k]; p.link.componentPropertyReferences = { characters: pK };
       if (p.lb) { p.lb.componentPropertyReferences = { characters: pL }; p.val.componentPropertyReferences = { characters: pV }; }
       if (p.off) { p.off[0].componentPropertyReferences = { characters: pO }; p.on[0].componentPropertyReferences = { characters: pW }; }
     });
-    s.description = '<div class="save-card">.save-card__top (label B2s + value H2) or .save-card__compare (.credit-col ×2 + arrow 16), then .save-card__link</div>. Clip, light-500 line, radius 16, white, Elevation card s. type=total = how much was saved; type=compare = credits without vs with Swing Pass (the second column is .credit-col--on, dark-500).';
+    s.description = '<div class="swing_save_card">.swing_save_card__top (label B2s + value H2) or .swing_save_card__compare (.swing_credit_col ×2 + arrow 16), then .swing_save_card__link</div>. Clip, light-500 line, radius 16, white, Elevation card s. type=total = how much was saved; type=compare = credits without vs with Swing Pass (the second column is .swing_credit_col_on, dark-500).';
   }, { description: 'Swing Pass savings: a total, or credits without vs with the pass.', variants: V });
 }
 
@@ -7869,8 +8234,8 @@ async function buildPayMethodPage(R, notes) {
   }, function (s) {
     var pN = ensureProp(s, 'name', 'TEXT', 'Rp. 2,500,000 / 12 months'), pS = ensureProp(s, 'sub', 'TEXT', 'Renews on 01 Jan 2026'), pA = ensureProp(s, 'showAction', 'BOOLEAN', true);
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', icon.id);
-    Object.keys(pm).forEach(function (k) { var x = pm[k]; x.nm.componentPropertyReferences = { characters: pN }; if (x.sb) x.sb.componentPropertyReferences = { characters: pS }; x.b.componentPropertyReferences = { visible: pA }; if (x.ic) x.ic.componentPropertyReferences = { mainComponent: pI }; });
-    s.description = '<div class="pay-method pay-method--l"><img 22><span class="pay-method__text"><span class="pay-method__name">…</span><span class="pay-method__sub">…</span></span><button class="btn btn--s btn--tertiary">Manage</button></div>. light-200, radius 16, 12/16, gap 14. Replace the image fill on "logo" for another wallet; the button label is on the Button instance.';
+    wireKeys(pm).forEach(function (k) { var x = pm[k]; x.nm.componentPropertyReferences = { characters: pN }; if (x.sb) x.sb.componentPropertyReferences = { characters: pS }; x.b.componentPropertyReferences = { visible: pA }; if (x.ic) x.ic.componentPropertyReferences = { mainComponent: pI }; });
+    s.description = '<div class="swing_pay_method swing_pay_method_l"><img 22><span class="swing_pay_method__text"><span class="swing_pay_method__name">…</span><span class="swing_pay_method__sub">…</span></span><button class="swing_btn swing_btn_s swing_btn_tertiary">Manage</button></div>. light-200, radius 16, 12/16, gap 14. Replace the image fill on "logo" for another wallet; the button label is on the Button instance.';
   }, { variants: V,  description: 'The billing method row with its renewal line and a Manage button.' });
 }
 
@@ -7904,8 +8269,8 @@ async function buildDealCardPage(R, notes) {
     dc[comp.name] = { tt: tt, t: t, mt: mt };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Power Golf Swing Zone 50% Off'), pM = ensureProp(s, 'meta', 'TEXT', 'Mon - Sun. 08:00 - 23:00.');
-    Object.keys(dc).forEach(function (k) { dc[k].t.componentPropertyReferences = { characters: pT }; dc[k].mt.componentPropertyReferences = { characters: pM }; });
-    s.description = '<a class="deal-card"><img class="deal-card__img"><span class="deal-card__tag"><img 10>{kind}</span><span class="deal-card__text"><span class="deal-card__title">…</span><span class="deal-card__meta">…</span></span></a> in .deal-rail (gap 8, centred first card). 160 x 240, padding 16, radius 16, photo + deal scrim, white text. kind = the tag (Driving range / Tee time). Replace the image fill on "photo" per deal.';
+    wireKeys(dc).forEach(function (k) { dc[k].t.componentPropertyReferences = { characters: pT }; dc[k].mt.componentPropertyReferences = { characters: pM }; });
+    s.description = '<a class="swing_deal_card"><img class="swing_deal_card__img"><span class="swing_deal_card__tag"><img 10>{kind}</span><span class="swing_deal_card__text"><span class="swing_deal_card__title">…</span><span class="swing_deal_card__meta">…</span></span></a> in .swing_deal_rail (gap 8, centred first card). 160 x 240, padding 16, radius 16, photo + deal scrim, white text. kind = the tag (Driving range / Tee time). Replace the image fill on "photo" per deal.';
   }, { description: 'A Swing Pass deal: photo, kind tag, title and hours.', variants: V });
 }
 
@@ -7928,8 +8293,8 @@ async function buildPerkPage(R, notes) {
     pk[comp.name] = { ic: ic, t: t, d: d };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ics[0].id), pT = ensureProp(s, 'title', 'TEXT', '0% processing fee'), pD = ensureProp(s, 'desc', 'TEXT', 'If you\u2019re Swing Pass member, you won\u2019t be charged with any processing fees.');
-    Object.keys(pk).forEach(function (k) { pk[k].ic.componentPropertyReferences = { mainComponent: pI }; pk[k].t.componentPropertyReferences = { characters: pT }; pk[k].d.componentPropertyReferences = { characters: pD }; });
-    s.description = '<div class="perk"><span class="perk__icon"><i style="--perk:url(b-*.svg)"></i></span><span class="perk__text"><span class="perk__title">…</span><span class="perk__desc">…</span></span></div> in .perk-list (white, line, radius 16, padding 24, gap 24, dividers between). The web paints the perk art with the Swing Pass gradient through a mask; here the art keeps its own colours (Icon/Ref/sp-b-*), swap it with the icon property.';
+    wireKeys(pk).forEach(function (k) { pk[k].ic.componentPropertyReferences = { mainComponent: pI }; pk[k].t.componentPropertyReferences = { characters: pT }; pk[k].d.componentPropertyReferences = { characters: pD }; });
+    s.description = '<div class="swing_perk"><span class="swing_perk__icon"><i style="--perk:url(b-*.svg)"></i></span><span class="swing_perk__text"><span class="swing_perk__title">…</span><span class="swing_perk__desc">…</span></span></div> in .swing_perk_list (white, line, radius 16, padding 24, gap 24, dividers between). The web paints the perk art with the Swing Pass gradient through a mask; here the art keeps its own colours (Icon/Ref/sp-b-*), swap it with the icon property.';
   }, { description: 'A Swing Pass benefit: icon tile, title, description.' });
 }
 
@@ -8123,8 +8488,8 @@ async function buildEventsHeadPage(R, notes) {
     eh[comp.name] = { t: t, ph: ph };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Register events\n& tournaments'), pP = ensureProp(s, 'placeholder', 'TEXT', 'Search events...');
-    Object.keys(eh).forEach(function (k) { eh[k].t.componentPropertyReferences = { characters: pT }; eh[k].ph.componentPropertyReferences = { characters: pP }; });
-    s.description = '<header class="events-head [events-head--tee]"><div class="events-head__art"></div><div class="events-head__bar"><a class="round-btn">back</a><h1 class="events-head__title">…</h1></div><label class="searchbar searchbar--ads">…country…</label></header>. 276 tall, purple-100; the search bar hangs 2 below the bottom (the component is 278). tee=true = the tee time art, 26 from the top (events: 62).';
+    wireKeys(eh).forEach(function (k) { eh[k].t.componentPropertyReferences = { characters: pT }; eh[k].ph.componentPropertyReferences = { characters: pP }; });
+    s.description = '<header class="swing_events_head [swing_events_head_tee]"><div class="swing_events_head__art"></div><div class="swing_events_head__bar"><a class="swing_round_btn">back</a><h1 class="swing_events_head__title">…</h1></div><label class="swing_searchbar swing_searchbar_ads">…country…</label></header>. 276 tall, purple-100; the search bar hangs 2 below the bottom (the component is 278). tee=true = the tee time art, 26 from the top (events: 62).';
   }, { description: 'The ADS listing header: art, round back button, big title, search with country.', variants: V });
 }
 
@@ -8170,8 +8535,8 @@ async function buildEventCardPage(R, notes) {
   }, function (s) {
     var P = { t: ensureProp(s, 'title', 'TEXT', 'INDONESIA DEVELOPMENT OPEN - SERIES 2'), amt: ensureProp(s, 'amount', 'TEXT', 'Rp. 850,000 / pax'), place: ensureProp(s, 'place', 'TEXT', 'Jababeka Golf & Country Club'),
       date: ensureProp(s, 'date', 'TEXT', '\u2022  Monday, 18 May 2026'), ct: ensureProp(s, 'cashback', 'TEXT', 'Up to 2% cashback') };
-    Object.keys(ec).forEach(function (k) { Object.keys(P).forEach(function (f) { if (ec[k][f]) ec[k][f].componentPropertyReferences = { characters: P[f] }; }); });
-    s.description = '<a class="event-card"><span class="event-card__media"><span class="event-card__photo"><img><span class="cash-chip">…</span></span>[<span class="pass-strip">…</span>]</span><span class="event-card__body">title H5, price, .meta-line</span></a> in .event-list (gap 32). pass=true adds the Swing Pass strip under the photo. Replace the image fill on "image" per event. The date keeps the web\'s "•" separator in its text.';
+    wireKeys(ec).forEach(function (k) { wireKeys(P).forEach(function (f) { if (ec[k][f]) ec[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    s.description = '<a class="swing_event_card"><span class="swing_event_card__media"><span class="swing_event_card__photo"><img><span class="swing_cash_chip">…</span></span>[<span class="swing_pass_strip">…</span>]</span><span class="swing_event_card__body">title H5, price, .swing_meta_line</span></a> in .swing_event_list (gap 32). pass=true adds the Swing Pass strip under the photo. Replace the image fill on "image" per event. The date keeps the web\'s "•" separator in its text.';
   }, { description: 'An event or tournament in the list: photo with cashback, optional Swing Pass strip, title, price, place and date.', variants: V });
 }
 
@@ -8190,8 +8555,8 @@ async function buildHostCtaPage(R, notes) {
     hc[comp.name] = t;
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Planning to host a tournament really soon? Connect with us and let Swing help you!');
-    Object.keys(hc).forEach(function (k) { hc[k].componentPropertyReferences = { characters: pT }; });
-    s.description = '<div class="host-cta [host-cta--inset]"><h2 class="host-cta__title">…</h2><a class="btn btn--s btn--tertiary">…</a></div> at the end of a listing. Centred, gap 16, title H5. inset=true pads 24 more on each side (tee time). Set the button label on the Button instance.';
+    wireKeys(hc).forEach(function (k) { hc[k].componentPropertyReferences = { characters: pT }; });
+    s.description = '<div class="swing_host_cta [swing_host_cta_inset]"><h2 class="swing_host_cta__title">…</h2><a class="swing_btn swing_btn_s swing_btn_tertiary">…</a></div> at the end of a listing. Centred, gap 16, title H5. inset=true pads 24 more on each side (tee time). Set the button label on the Button instance.';
   }, { description: 'A centred ask at the end of a listing, with a tertiary button.', variants: V });
 }
 
@@ -8260,7 +8625,7 @@ async function buildTeeTimeScreen(R, notes) {
   var one = function (m, props) { var i = m.createInstance(); if (props) setText(i, props); return i; };
   await screenList(R, r.page, r.scr, 'Tee time', async function (row) {
     await row('EventsHead', partSrc('EventsHead', PG) + ' · tee=true: tee time art (26 down), title, search + country', [one(r.EH['tee=true'])]);
-    await row('ProductCard', partSrc('ProductCard', PG) + ' · size=l (.product-card--l), full width, 3 courses', [one(PC['size=l'])]);
+    await row('ProductCard', partSrc('ProductCard', PG) + ' · size=l (.swing_product_card_l), full width, 3 courses', [one(PC['size=l'])]);
     await row('HostCta', partSrc('HostCta', PG) + ' · inset=true (Request a location)', [one(r.HC['inset=true'])]);
   });
   notes.push('Tee time: built from stat.chara.id/swing/ref/teetime.html, on the same layout as Swing Pass events. The course photos are set per card on the instance.');
@@ -8291,8 +8656,8 @@ async function buildPromoCardPage(R, notes) {
     pr[comp.name] = { t: t, sb: sb };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Rp. 50,000 off for INDO Series 2'), pS = ensureProp(s, 'sub', 'TEXT', 'Expiry date: 31 Mar 2023');
-    Object.keys(pr).forEach(function (k) { pr[k].t.componentPropertyReferences = { characters: pT }; pr[k].sb.componentPropertyReferences = { characters: pS }; });
-    s.description = '<div class="promo-card [promo-card--pass]"><span class="promo-card__tag"><img 16></span><span class="promo-card__body"><span class="promo-card__title">…</span><span class="promo-card__sub">…</span></span></div>. Radius 8, green-100 line, green-50 tag. pass=true = .promo-card--pass (Swing Pass exclusive): purple-500 line, gradient tag, sub in B4s purple-500.';
+    wireKeys(pr).forEach(function (k) { pr[k].t.componentPropertyReferences = { characters: pT }; pr[k].sb.componentPropertyReferences = { characters: pS }; });
+    s.description = '<div class="swing_promo_card [swing_promo_card_pass]"><span class="swing_promo_card__tag"><img 16></span><span class="swing_promo_card__body"><span class="swing_promo_card__title">…</span><span class="swing_promo_card__sub">…</span></span></div>. Radius 8, green-100 line, green-50 tag. pass=true = .swing_promo_card_pass (Swing Pass exclusive): purple-500 line, gradient tag, sub in B4s purple-500.';
   }, { description: 'A promo with its tag and expiry; pass=true for Swing Pass exclusive.', variants: V });
 }
 
@@ -8311,8 +8676,8 @@ async function buildCreditStripPage(R, notes) {
     cs[comp.name] = t;
   }, function (s) {
     var pT = ensureProp(s, 'text', 'TEXT', 'Earn up to 5% cashback on Swing Credits!');
-    Object.keys(cs).forEach(function (k) { cs[k].componentPropertyReferences = { characters: pT }; });
-    s.description = '<a class="credit-strip"><img credits 16><span>…</span><img chevron 16></a>. Padding 8, gap 8, radius 8, purple-50, B3 Semibold purple-500.';
+    wireKeys(cs).forEach(function (k) { cs[k].componentPropertyReferences = { characters: pT }; });
+    s.description = '<a class="swing_credit_strip"><img credits 16><span>…</span><img chevron 16></a>. Padding 8, gap 8, radius 8, purple-50, B3 Semibold purple-500.';
   }, { description: 'A Swing Credits cashback line that links on.' });
 }
 
@@ -8332,8 +8697,8 @@ async function buildInfoTilePage(R, notes) {
     it[comp.name] = { i: i, l: l, v: val };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ic.id), pL = ensureProp(s, 'label', 'TEXT', 'Venue'), pV = ensureProp(s, 'value', 'TEXT', 'Jababeka Golf & Country Club');
-    Object.keys(it).forEach(function (k) { it[k].i.componentPropertyReferences = { mainComponent: pI }; it[k].l.componentPropertyReferences = { characters: pL }; it[k].v.componentPropertyReferences = { characters: pV }; });
-    s.description = '<div class="info-tile [info-tile--wide]"><img 22><span class="info-tile__text"><span class="info-tile__label">…</span><span class="info-tile__value">…</span></span></div> in .info-tiles (2 columns, gap 8 / 12). light-200, radius 16, 12/16, gap 14. --wide spans both columns: set the instance to Fill in a full-width row. Swap the icon with the icon property.';
+    wireKeys(it).forEach(function (k) { it[k].i.componentPropertyReferences = { mainComponent: pI }; it[k].l.componentPropertyReferences = { characters: pL }; it[k].v.componentPropertyReferences = { characters: pV }; });
+    s.description = '<div class="swing_info_tile [swing_info_tile_wide]"><img 22><span class="swing_info_tile__text"><span class="swing_info_tile__label">…</span><span class="swing_info_tile__value">…</span></span></div> in .swing_info_tiles (2 columns, gap 8 / 12). light-200, radius 16, 12/16, gap 14. --wide spans both columns: set the instance to Fill in a full-width row. Swap the icon with the icon property.';
   }, { description: 'A label and value with an icon, in a 2-column grid.' });
 }
 
@@ -8371,8 +8736,8 @@ async function buildVenuePage(R, notes) {
     vn[comp.name] = { nm: nm, ad: ad, ds: ds };
   }, function (s) {
     var pN = ensureProp(s, 'name', 'TEXT', 'Rainbow Hills Golf'), pA = ensureProp(s, 'address', 'TEXT', 'Lengkong Kulon, Pagedangan, Tangerang Regency, DKI Jakarta 15339'), pD = ensureProp(s, 'distance', 'TEXT', '2km from your location');
-    Object.keys(vn).forEach(function (k) { if (vn[k].nm) vn[k].nm.componentPropertyReferences = { characters: pN }; vn[k].ad.componentPropertyReferences = { characters: pA }; vn[k].ds.componentPropertyReferences = { characters: pD }; });
-    s.description = '<div class="venue"><div class="venue__text">.venue__id (name B2s, address B3s, 3 lines), .meta-line--primary</div><div class="venue__map"><img><span class="venue__pin">…</span></div></div>. Gap 16; map 94, radius 8, purple pin in the middle. Replace the image fill on "image" with the place\'s map.';
+    wireKeys(vn).forEach(function (k) { if (vn[k].nm) vn[k].nm.componentPropertyReferences = { characters: pN }; vn[k].ad.componentPropertyReferences = { characters: pA }; vn[k].ds.componentPropertyReferences = { characters: pD }; });
+    s.description = '<div class="swing_venue"><div class="swing_venue__text">.swing_venue__id (name B2s, address B3s, 3 lines), .swing_meta_line_primary</div><div class="swing_venue__map"><img><span class="swing_venue__pin">…</span></div></div>. Gap 16; map 94, radius 8, purple pin in the middle. Replace the image fill on "image" with the place\'s map.';
   }, { variants: V,  description: 'A place: name, address, distance and a small map with a pin.' });
 }
 
@@ -8395,8 +8760,8 @@ async function buildBrandCardPage(R, notes) {
     bc[comp.name] = t;
   }, function (s) {
     var pN = ensureProp(s, 'name', 'TEXT', 'VIVO');
-    Object.keys(bc).forEach(function (k) { bc[k].componentPropertyReferences = { characters: pN }; });
-    s.description = '<a class="brand-card"><img [class="brand-card__wide"]><span class="brand-card__name"><span>…</span><img chevron 12></span></a> in .brand-grid (2 columns, gap 8 / 12). light-200, radius 16, padding 16, gap 8. wide=true = a 90 x 48 logo. Replace the image fill on "logo" per sponsor.';
+    wireKeys(bc).forEach(function (k) { bc[k].componentPropertyReferences = { characters: pN }; });
+    s.description = '<a class="swing_brand_card"><img [class="swing_brand_card__wide"]><span class="swing_brand_card__name"><span>…</span><img chevron 12></span></a> in .swing_brand_grid (2 columns, gap 8 / 12). light-200, radius 16, padding 16, gap 8. wide=true = a 90 x 48 logo. Replace the image fill on "logo" per sponsor.';
   }, { description: 'A sponsor tile: logo and name.', variants: V });
 }
 
@@ -8550,8 +8915,8 @@ async function buildNoteBarPage(R, notes) {
     nb[comp.name] = await K.txt(comp, '--type-b3s', '--light-100', 'You will be auto renewed with recurring billing methods.', 'text', 'fill');
   }, function (s) {
     var pT = ensureProp(s, 'text', 'TEXT', 'You will be auto renewed with recurring billing methods.');
-    Object.keys(nb).forEach(function (k) { nb[k].componentPropertyReferences = { characters: pT }; });
-    s.description = '<p class="note-bar [note-bar--primary|--warning]"><i class="icon">info</i>…</p>. ADS inline toaster: padding 8, gap 8, radius 8, dark-200 (primary purple-500, warning orange-700), B3 Semibold white.';
+    wireKeys(nb).forEach(function (k) { nb[k].componentPropertyReferences = { characters: pT }; });
+    s.description = '<p class="swing_note_bar [swing_note_bar_primary|--warning]"><i class="swing_icon">info</i>…</p>. ADS inline toaster: padding 8, gap 8, radius 8, dark-200 (primary purple-500, warning orange-700), B3 Semibold white.';
   }, { description: 'A short dark note on the grey band.', variants: V });
 }
 
@@ -8576,8 +8941,8 @@ async function buildMethodRowPage(R, notes) {
     mr[comp.name] = p;
   }, function (s) {
     var pL = ensureProp(s, 'logoImage', 'INSTANCE_SWAP', logo.id), pN = ensureProp(s, 'name', 'TEXT', 'Mastercard 1234');
-    Object.keys(mr).forEach(function (k) { mr[k].lg.componentPropertyReferences = { mainComponent: pL }; mr[k].nm.componentPropertyReferences = { characters: pN }; });
-    s.description = '<a class="method-row"><img 22 | class="method-row__logo" 40 x 22><span class="method-row__name">…</span>[button | chevron]</a> in .method-list. Gap 14, min 48 (56 with a button), light-500 line under it (set the last instance\'s bottom stroke to 0 where the web has no line). Swap the logo with the logoImage property (Logo/Ref/*); a DS line icon also fits the 22 slot.';
+    wireKeys(mr).forEach(function (k) { mr[k].lg.componentPropertyReferences = { mainComponent: pL }; mr[k].nm.componentPropertyReferences = { characters: pN }; });
+    s.description = '<a class="swing_method_row"><img 22 | class="swing_method_row__logo" 40 x 22><span class="swing_method_row__name">…</span>[button | chevron]</a> in .swing_method_list. Gap 14, min 48 (56 with a button), light-500 line under it (set the last instance\'s bottom stroke to 0 where the web has no line). Swap the logo with the logoImage property (Logo/Ref/*); a DS line icon also fits the 22 slot.';
   }, { description: 'A payment method row: logo, name, and a button or chevron.', variants: V });
 }
 
@@ -8619,8 +8984,8 @@ async function buildPlanPage(R, notes) {
     pl[comp.name] = p;
   }, function (s) {
     var P = { name: ensureProp(s, 'name', 'TEXT', '12 months'), was: ensureProp(s, 'was', 'TEXT', '~ Rp. 3,000,000'), now: ensureProp(s, 'now', 'TEXT', '~ Rp. 2,500,000'), flag: ensureProp(s, 'flag', 'TEXT', 'MOST POPULAR!') };
-    Object.keys(pl).forEach(function (k) { Object.keys(P).forEach(function (f) { if (pl[k][f]) pl[k][f].componentPropertyReferences = { characters: P[f] }; }); });
-    s.description = '<label class="plan">[<span class="plan__flag">Most popular!</span>]<span class="plan__body"><span class="plan__text">name + .plan__prices (was + now)</span><input class="choice__radio" type="radio"></span></label> in .plan-list (gap 8). kind: popular = flag + struck price + now, was = struck + now, plain = one price (dark-300). selected = the checked plan (purple-500 line, purple-50). Price texts keep the "~ " prefix; a text override keeps its first two characters in B3 only if you keep them.';
+    wireKeys(pl).forEach(function (k) { wireKeys(P).forEach(function (f) { if (pl[k][f]) pl[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    s.description = '<label class="swing_plan">[<span class="swing_plan__flag">Most popular!</span>]<span class="swing_plan__body"><span class="swing_plan__text">name + .swing_plan__prices (was + now)</span><input class="swing_choice__radio" type="radio"></span></label> in .swing_plan_list (gap 8). kind: popular = flag + struck price + now, was = struck + now, plain = one price (dark-300). selected = the checked plan (purple-500 line, purple-50). Price texts keep the "~ " prefix; a text override keeps its first two characters in B3 only if you keep them.';
   }, { description: 'A billing plan to pick, with its price.', variants: V });
 }
 
@@ -8873,7 +9238,7 @@ async function buildSwingPassWaitingScreen(R, notes) {
     await row('PassCard', partSrc('PassCard', PG) + ' · enlarge=false, waiting for verification', [one(PC['enlarge=false'])]);
     await row('Button', partSrc('Button', PG) + ' · tone=glass s', [one(BT['size=s, tone=glass, appearance=solid, state=default'], { label: 'Ok, got it!' })]);
   });
-  notes.push('Swing Pass waiting: built from stat.chara.id/swing/ref/swingpass-waiting.html. "Contact Swing Suppport" is .btn--text.btn--inverse; the DS Button has no text-only appearance, so it is a white CTA S text layer (the web typo "Suppport" is kept).');
+  notes.push('Swing Pass waiting: built from stat.chara.id/swing/ref/swingpass-waiting.html. "Contact Swing Suppport" is .swing_btn_text.btn--inverse; the DS Button has no text-only appearance, so it is a white CTA S text layer (the web typo "Suppport" is kept).');
   return { set: scr, count: 4, label: 'screen from 4 parts' };
 }
 
@@ -8970,8 +9335,8 @@ async function buildChoiceRowPage(R, notes) {
     await adsRadio(R, comp, v.selected === 'true', notes);
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'The plan is too expensive');
-    Object.keys(cr).forEach(function (k) { cr[k].componentPropertyReferences = { characters: pL }; });
-    s.description = '<label class="choice"><span class="choice__label">…</span><input class="choice__radio" type="radio"></label> in .choice-list. Gap 8, min 48, light-500 line under it; label B2 Semibold. selected = the checked radio (ADS radio art).';
+    wireKeys(cr).forEach(function (k) { cr[k].componentPropertyReferences = { characters: pL }; });
+    s.description = '<label class="swing_choice"><span class="swing_choice__label">…</span><input class="swing_choice__radio" type="radio"></label> in .swing_choice_list. Gap 8, min 48, light-500 line under it; label B2 Semibold. selected = the checked radio (ADS radio art).';
   }, { description: 'One answer to pick, with a radio on the right.', variants: V });
 }
 
@@ -9001,8 +9366,8 @@ async function buildBillRowPage(R, notes) {
     br[comp.name] = { t: t, m1: m1, m2: m2, am: am };
   }, function (s) {
     var P = { t: ensureProp(s, 'title', 'TEXT', 'Swing Pass \u00b7 12 months'), m1: ensureProp(s, 'meta', 'TEXT', '01 Jan 2026 \u00b7 Auto renewal \u00b7'), m2: ensureProp(s, 'wallet', 'TEXT', 'OVO'), am: ensureProp(s, 'amount', 'TEXT', 'Rp. 2,500,000') };
-    Object.keys(br).forEach(function (k) { Object.keys(P).forEach(function (f) { br[k][f].componentPropertyReferences = { characters: P[f] }; }); });
-    s.description = '<a class="bill-row"><span class="bill-row__text">title + .bill-row__meta (… · logo 14 + wallet)</span><span class="bill-row__end">amount + .badge.badge--s</span><i chevron></i></a> in .bill-list (the last row has no line: set its bottom stroke to 0). status = the Badge: scheduled primary, paid success, failed danger.';
+    wireKeys(br).forEach(function (k) { wireKeys(P).forEach(function (f) { br[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    s.description = '<a class="swing_bill_row"><span class="swing_bill_row__text">title + .swing_bill_row__meta (… · logo 14 + wallet)</span><span class="swing_bill_row__end">amount + .swing_badge.badge--s</span><i chevron></i></a> in .swing_bill_list (the last row has no line: set its bottom stroke to 0). status = the Badge: scheduled primary, paid success, failed danger.';
   }, { description: 'A Swing Pass charge: plan, date and wallet, amount and status.', variants: V });
 }
 
@@ -9042,7 +9407,7 @@ async function buildSwingPassCancelScreen(R, notes) {
     await row('Divider', partSrc('Divider', PG) + ' · type=line', [one(DV['type=line'])]);
     await row('Button', partSrc('Button', PG) + ' · l solid disabled until a reason is picked', [one(BT['size=l, tone=primary, appearance=solid, state=disabled'], { label: 'Cancel membership', showIconEnd: true, iconEnd: arrow.id })]);
   });
-  notes.push('Swing Pass cancel: built from stat.chara.id/swing/ref/swingpass-cancel.html. The disabled button is the DS disabled (light-300, dark-200); the web\'s ADS .btn--off-ads is dark-100 with white text. The confirm sheet is a state, not drawn.');
+  notes.push('Swing Pass cancel: built from stat.chara.id/swing/ref/swingpass-cancel.html. The disabled button is the DS disabled (light-300, dark-200); the web\'s ADS .swing_btn_off_ads is dark-100 with white text. The confirm sheet is a state, not drawn.');
   return { set: scr, count: 5, label: 'screen from 5 parts' };
 }
 
@@ -9102,8 +9467,8 @@ async function buildDateBtnPage(R, notes) {
     db[comp.name] = { d: d, t: t };
   }, function (s) {
     var pD = ensureProp(s, 'day', 'TEXT', 'FRI'), pT = ensureProp(s, 'date', 'TEXT', '16 Sep');
-    Object.keys(db).forEach(function (k) { db[k].d.componentPropertyReferences = { characters: pD }; db[k].t.componentPropertyReferences = { characters: pT }; });
-    s.description = '<button class="date-btn" aria-pressed><small>FRI</small>16 Sep</button> in .date-band__days (gap 4). 56 x 36, radius 8. selected = aria-pressed="true": purple-500 line, purple-50, date purple-500.';
+    wireKeys(db).forEach(function (k) { db[k].d.componentPropertyReferences = { characters: pD }; db[k].t.componentPropertyReferences = { characters: pT }; });
+    s.description = '<button class="swing_date_btn" aria-pressed><small>FRI</small>16 Sep</button> in .swing_date_band__days (gap 4). 56 x 36, radius 8. selected = aria-pressed="true": purple-500 line, purple-50, date purple-500.';
   }, { description: 'A day to pick in the date strip.', variants: V });
 }
 async function buildSessionTabPage(R, notes) {
@@ -9121,8 +9486,8 @@ async function buildSessionTabPage(R, notes) {
     st[comp.name] = { i: i, t: await K.txt(comp, '--type-b3s', sel ? '--purple-500' : '--dark-300', sel ? 'Day session' : 'Night session', 'label') };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', I.day.id), pL = ensureProp(s, 'label', 'TEXT', 'Day session');
-    Object.keys(st).forEach(function (k) { st[k].i.componentPropertyReferences = { mainComponent: pI }; st[k].t.componentPropertyReferences = { characters: pL }; });
-    s.description = '<button class="session-tab" role="tab" aria-selected>icon 14 + label</button> in .session-tabs at the bottom of the date band. Radius 16 on top; selected = white, purple-500, Elevation card s.';
+    wireKeys(st).forEach(function (k) { st[k].i.componentPropertyReferences = { mainComponent: pI }; st[k].t.componentPropertyReferences = { characters: pL }; });
+    s.description = '<button class="swing_session_tab" role="tab" aria-selected>icon 14 + label</button> in .swing_session_tabs at the bottom of the date band. Radius 16 on top; selected = white, purple-500, Elevation card s.';
   }, { description: 'A day / night session tab on the date band.', variants: V });
 }
 async function buildRateCardPage(R, notes) {
@@ -9144,8 +9509,8 @@ async function buildRateCardPage(R, notes) {
     rc[comp.name] = { t: t, w: w, b: b, c: c };
   }, function (s) {
     var P = { t: ensureProp(s, 'time', 'TEXT', '05:30 - 06:00'), w: ensureProp(s, 'was', 'TEXT', 'Rp. 1,580,000'), b: ensureProp(s, 'price', 'TEXT', 'Rp. 1,422,000 / pax'), c: ensureProp(s, 'discount', 'TEXT', '-10%') };
-    Object.keys(rc).forEach(function (k) { Object.keys(P).forEach(function (f) { rc[k][f].componentPropertyReferences = { characters: P[f] }; }); });
-    s.description = '<a class="rate-card">.rate-card__time + .rate-card__price (struck was, best + .rate-chip)</a> in .rate-grid (2 columns, gap 8 / 12). White, light-500 line, radius 16.';
+    wireKeys(rc).forEach(function (k) { wireKeys(P).forEach(function (f) { rc[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    s.description = '<a class="swing_rate_card">.swing_rate_card__time + .swing_rate_card__price (struck was, best + .swing_rate_chip)</a> in .swing_rate_grid (2 columns, gap 8 / 12). White, light-500 line, radius 16.';
   }, { description: 'A tee time slot with its price and discount.' });
 }
 async function buildInclItemPage(R, notes) {
@@ -9161,8 +9526,8 @@ async function buildInclItemPage(R, notes) {
     it[comp.name] = { i: i, t: t };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ic.id), pT = ensureProp(s, 'label', 'TEXT', 'Green fee');
-    Object.keys(it).forEach(function (k) { it[k].i.componentPropertyReferences = { mainComponent: pI }; it[k].t.componentPropertyReferences = { characters: pT }; });
-    s.description = '<span class="incl"><span><img 12>label</span><img tick 12></span> in .incl-grid (2 columns, gap 4). light-200, radius 8, 8 / 12.';
+    wireKeys(it).forEach(function (k) { it[k].i.componentPropertyReferences = { mainComponent: pI }; it[k].t.componentPropertyReferences = { characters: pT }; });
+    s.description = '<span class="swing_incl"><span><img 12>label</span><img tick 12></span> in .swing_incl_grid (2 columns, gap 4). light-200, radius 8, 8 / 12.';
   }, { description: 'Something the price includes, with a tick.' });
 }
 async function buildAmenityPage(R, notes) {
@@ -9175,8 +9540,8 @@ async function buildAmenityPage(R, notes) {
     am[comp.name] = { i: i, t: await K.txt(comp, '--type-b2s', '--dark-500', 'Club valet', 'label', 'fill') };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ic.id), pT = ensureProp(s, 'label', 'TEXT', 'Club valet');
-    Object.keys(am).forEach(function (k) { am[k].i.componentPropertyReferences = { mainComponent: pI }; am[k].t.componentPropertyReferences = { characters: pT }; });
-    s.description = '<span class="amenity"><img 22>label</span> in .amenity-rail (4 rows, 220 columns, gap 8 / 12, scrolls sideways). light-200, radius 8, 12 / 16, gap 14.';
+    wireKeys(am).forEach(function (k) { am[k].i.componentPropertyReferences = { mainComponent: pI }; am[k].t.componentPropertyReferences = { characters: pT }; });
+    s.description = '<span class="swing_amenity"><img 22>label</span> in .swing_amenity_rail (4 rows, 220 columns, gap 8 / 12, scrolls sideways). light-200, radius 8, 12 / 16, gap 14.';
   }, { description: 'A course amenity with its icon.' });
 }
 async function buildStatTilePage(R, notes) {
@@ -9187,8 +9552,8 @@ async function buildStatTilePage(R, notes) {
     sv[comp.name] = { l: await K.txt(comp, '--type-b3', '--dark-300', 'Holes', 'label', 'fill'), v: await K.txt(comp, '--type-b3s', '--dark-500', '18 holes', 'value', 'fill') };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Holes'), pV = ensureProp(s, 'value', 'TEXT', '18 holes');
-    Object.keys(sv).forEach(function (k) { sv[k].l.componentPropertyReferences = { characters: pL }; sv[k].v.componentPropertyReferences = { characters: pV }; });
-    s.description = '<span class="stat-tile">label<b>value</b></span> in .stat-tiles (2 columns, gap 8 / 12). light-200, radius 8.';
+    wireKeys(sv).forEach(function (k) { sv[k].l.componentPropertyReferences = { characters: pL }; sv[k].v.componentPropertyReferences = { characters: pV }; });
+    s.description = '<span class="swing_stat_tile">label<b>value</b></span> in .swing_stat_tiles (2 columns, gap 8 / 12). light-200, radius 8.';
   }, { description: 'A course fact: label and value.' });
 }
 
@@ -9360,8 +9725,8 @@ async function buildPayTypePage(R, notes) {
     pt[comp.name] = { i: i, t: await K.txt(comp, '--type-b3s', sel ? '--purple-500' : '--dark-300', sel ? 'Host pays for everyone' : 'Players pay for themselves', 'label', 'fill') };
   }, function (s) {
     var pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', ic.id), pL = ensureProp(s, 'label', 'TEXT', 'Host pays for everyone');
-    Object.keys(pt).forEach(function (k) { pt[k].i.componentPropertyReferences = { mainComponent: pI }; pt[k].t.componentPropertyReferences = { characters: pL }; });
-    s.description = '<button class="pay-type__opt" role="radio" aria-checked>icon 20 + label</button> in .pay-type (2 columns, gap 8). selected = aria-checked="true": purple-100 line, purple-50, purple-500, Elevation brand.';
+    wireKeys(pt).forEach(function (k) { pt[k].i.componentPropertyReferences = { mainComponent: pI }; pt[k].t.componentPropertyReferences = { characters: pL }; });
+    s.description = '<button class="swing_pay_type__opt" role="radio" aria-checked>icon 20 + label</button> in .swing_pay_type (2 columns, gap 8). selected = aria-checked="true": purple-100 line, purple-50, purple-500, Elevation brand.';
   }, { description: 'Who pays: one of two options.', variants: V });
 }
 async function buildPlayerRowPage(R, notes) {
@@ -9392,8 +9757,8 @@ async function buildPlayerRowPage(R, notes) {
     pr[comp.name] = p;
   }, function (s) {
     var P = { nm: ensureProp(s, 'name', 'TEXT', 'Alvin Lianto (Host)'), sub: ensureProp(s, 'sub', 'TEXT', 'Regular Swing player'), pr: ensureProp(s, 'price', 'TEXT', 'Rp. 1,222,000'), ad: ensureProp(s, 'action', 'TEXT', 'Add a player') };
-    Object.keys(pr).forEach(function (k) { Object.keys(P).forEach(function (f) { if (pr[k][f]) pr[k][f].componentPropertyReferences = { characters: P[f] }; }); });
-    s.description = '<div class="player-row">avatar + .player-row__text (name H6, sub B3s) + .player-row__price (B3s + chevron)</div> in .player-list (white, line, radius 16; items 16 padding, line between). kind=host = the booker; player = a joined player (sub in green-700, .player-row__sub--paid; set the avatar initials on the nested Avatar); empty = an open slot with "Add a player" (.btn--text); own = an open slot when players pay for themselves. A Swing Pass member\'s sub is gradient text on the web; set the sub colour on the instance.';
+    wireKeys(pr).forEach(function (k) { wireKeys(P).forEach(function (f) { if (pr[k][f]) pr[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    s.description = '<div class="swing_player_row">avatar + .swing_player_row__text (name H6, sub B3s) + .swing_player_row__price (B3s + chevron)</div> in .swing_player_list (white, line, radius 16; items 16 padding, line between). kind=host = the booker; player = a joined player (sub in green-700, .swing_player_row__sub_paid; set the avatar initials on the nested Avatar); empty = an open slot with "Add a player" (.swing_btn_text); own = an open slot when players pay for themselves. A Swing Pass member\'s sub is gradient text on the web; set the sub colour on the instance.';
   }, { description: 'A player slot in the booking.', variants: V });
 }
 async function buildMiniRowPage(R, notes) {
@@ -9417,8 +9782,8 @@ async function buildMiniRowPage(R, notes) {
     mr[comp.name] = { t: t, sb: sb, i: i };
   }, function (s) {
     var pT = ensureProp(s, 'title', 'TEXT', 'Suvarna 10% Off (Weekday)'), pS = ensureProp(s, 'sub', 'TEXT', 'The best promo auto applied!'), pI = ensureProp(s, 'icon', 'INSTANCE_SWAP', I.promo.id);
-    Object.keys(mr).forEach(function (k) { mr[k].t.componentPropertyReferences = { characters: pT }; if (mr[k].sb) mr[k].sb.componentPropertyReferences = { characters: pS }; mr[k].i.componentPropertyReferences = { mainComponent: pI }; });
-    s.description = '<a class="mini-row">icon 16 + title / sub + chevron</a> or <label class="mini-row">credits + switch</label> in a player breakdown. light-200, radius 8, padding 12, gap 12. The DS Switch has one size (40 x 24); the web uses .switch--s.';
+    wireKeys(mr).forEach(function (k) { mr[k].t.componentPropertyReferences = { characters: pT }; if (mr[k].sb) mr[k].sb.componentPropertyReferences = { characters: pS }; mr[k].i.componentPropertyReferences = { mainComponent: pI }; });
+    s.description = '<a class="swing_mini_row">icon 16 + title / sub + chevron</a> or <label class="swing_mini_row">credits + switch</label> in a player breakdown. light-200, radius 8, padding 12, gap 12. The DS Switch has one size (40 x 24); the web uses .swing_switch_s.';
   }, { description: 'A small promo or Swing Credits row under a player.', variants: V });
 }
 async function buildPriceRowPage(R, notes) {
@@ -9439,8 +9804,8 @@ async function buildPriceRowPage(R, notes) {
     pw[comp.name] = { l: l, v: val, sb: sb };
   }, function (s) {
     var pL = ensureProp(s, 'label', 'TEXT', 'Alvin Lianto (Host)'), pV = ensureProp(s, 'value', 'TEXT', 'Rp. 1,222,000'), pS = ensureProp(s, 'sub', 'TEXT', 'Single Package');
-    Object.keys(pw).forEach(function (k) { pw[k].l.componentPropertyReferences = { characters: pL }; pw[k].v.componentPropertyReferences = { characters: pV }; if (pw[k].sb) pw[k].sb.componentPropertyReferences = { characters: pS }; });
-    s.description = '<div class="price-row [price-row--total]"><span class="price-row__label [--inline]">…</span><span class="price-row__value">…</span></div> in .price-rows (gap 8). kind=total = .price-row--total (value B3s); info = an inline 12 info icon after the label. A struck published rate: set the value text to strikethrough on the instance.';
+    wireKeys(pw).forEach(function (k) { pw[k].l.componentPropertyReferences = { characters: pL }; pw[k].v.componentPropertyReferences = { characters: pV }; if (pw[k].sb) pw[k].sb.componentPropertyReferences = { characters: pS }; });
+    s.description = '<div class="swing_price_row [swing_price_row_total]"><span class="swing_price_row__label [--inline]">…</span><span class="swing_price_row__value">…</span></div> in .swing_price_rows (gap 8). kind=total = .swing_price_row_total (value B3s); info = an inline 12 info icon after the label. A struck published rate: set the value text to strikethrough on the instance.';
   }, { description: 'A label and amount in the price breakdown.', variants: V });
 }
 async function buildPayBarPage(R, notes) {
@@ -9462,8 +9827,8 @@ async function buildPayBarPage(R, notes) {
     pb[comp.name] = { am: am, et: et };
   }, function (s) {
     var pA = ensureProp(s, 'amount', 'TEXT', 'Rp. 4,069,000'), pE = ensureProp(s, 'earn', 'TEXT', '+81,320 for all');
-    Object.keys(pb).forEach(function (k) { pb[k].am.componentPropertyReferences = { characters: pA }; pb[k].et.componentPropertyReferences = { characters: pE }; });
-    s.description = '<div class="pay-bar"><div class="pay-bar__total"><span class="pay-bar__amount">…</span><button class="pay-bar__earn">credits + …</button></div><a class="btn">Pay … →</a></div> in the bottom bar. Gap 16; the total sits right-aligned next to the Button l (set its label on the instance).';
+    wireKeys(pb).forEach(function (k) { pb[k].am.componentPropertyReferences = { characters: pA }; pb[k].et.componentPropertyReferences = { characters: pE }; });
+    s.description = '<div class="swing_pay_bar"><div class="swing_pay_bar__total"><span class="swing_pay_bar__amount">…</span><button class="swing_pay_bar__earn">credits + …</button></div><a class="swing_btn">Pay … →</a></div> in the bottom bar. Gap 16; the total sits right-aligned next to the Button l (set its label on the instance).';
   }, { description: 'The total, the credits you earn, and the pay button.' });
 }
 
@@ -9571,7 +9936,7 @@ async function buildBookingScreen(R, notes) {
     await row('Divider', partSrc('Divider', PG) + ' · type=line', [one(DV['type=line'])]);
     await row('PayBar', partSrc('PayBar', PG) + ' · total, credits earned, Pay for all', [P.bar.children[0].createInstance()]);
   });
-  notes.push('Booking: built from stat.chara.id/swing/ref/booking.html in its default state (host pays, 3 players, credits on, host breakdown open). "Add a player" and "Show more" are .btn--text (no DS text button), drawn as CTA S text; the pay-type icons use the DS groups-2 and referral icons (the web loads them from /swing/a/, which has no CORS for the plugin); PayMethod here has gap 14 (the web .pay-method without --l has 12).');
+  notes.push('Booking: built from stat.chara.id/swing/ref/booking.html in its default state (host pays, 3 players, credits on, host breakdown open). "Add a player" and "Show more" are .swing_btn_text (no DS text button), drawn as CTA S text; the pay-type icons use the DS groups-2 and referral icons (the web loads them from /swing/a/, which has no CORS for the plugin); PayMethod here has gap 14 (the web .swing_pay_method without --l has 12).');
   return { set: scr, count: 11, label: 'screen from 11 parts' };
 }
 
@@ -9663,7 +10028,7 @@ async function buildBookingDetailsScreen(R, notes) {
     await row('Caption', partSrc('Caption', PG) + ' · tone=neutral, size=s', [one(CP['tone=neutral, size=s'])]);
     await row('Divider', partSrc('Divider', PG) + ' · type=line', [one(DV['type=line'])]);
   });
-  notes.push('Booking details: built from stat.chara.id/swing/ref/booking-details.html in its default (confirmed) state. The web renders the page with JS; the "Waiting players" state (?state=waiting) and the Swing Pass view (?pass=1) are not drawn. Text buttons (.btn--text) are CTA S text; the options icon is the DS more-h (the web loads it from /swing/a/, no CORS).');
+  notes.push('Booking details: built from stat.chara.id/swing/ref/booking-details.html in its default (confirmed) state. The web renders the page with JS; the "Waiting players" state (?state=waiting) and the Swing Pass view (?pass=1) are not drawn. Text buttons (.swing_btn_text) are CTA S text; the options icon is the DS more-h (the web loads it from /swing/a/, no CORS).');
   return { set: scr, count: 8, label: 'screen from 8 parts' };
 }
 
@@ -9694,8 +10059,8 @@ async function buildRefRowPage(R, notes) {
     rr[comp.name] = p;
   }, function (s) {
     var P = { nm: ensureProp(s, 'name', 'TEXT', 'Tio Saputra'), bd: ensureProp(s, 'body', 'TEXT', 'Joined on 15 May 2026'), rw: ensureProp(s, 'reward', 'TEXT', '100,000') };
-    Object.keys(rr).forEach(function (k) { Object.keys(P).forEach(function (f) { if (rr[k][f]) rr[k][f].componentPropertyReferences = { characters: P[f] }; }); });
-    s.description = '<li class="ref-row">avatar + .ref-row__text (name, joined) + .ref-row__end</li> in .ref-list (gap 8). light-200, radius 16, 12 / 16, gap 12. booked=false: Send reminder; booked=true: the reward and a green tick. Set the initials on the nested Avatar.';
+    wireKeys(rr).forEach(function (k) { wireKeys(P).forEach(function (f) { if (rr[k][f]) rr[k][f].componentPropertyReferences = { characters: P[f] }; }); });
+    s.description = '<li class="swing_ref_row">avatar + .swing_ref_row__text (name, joined) + .swing_ref_row__end</li> in .swing_ref_list (gap 8). light-200, radius 16, 12 / 16, gap 12. booked=false: Send reminder; booked=true: the reward and a green tick. Set the initials on the nested Avatar.';
   }, { description: 'A referred friend and their status.', variants: V });
 }
 
@@ -9912,7 +10277,7 @@ async function buildTournamentConfirmScreen(R, notes) {
     await row('Divider', partSrc('Divider', PG) + ' · type=line', [one(DV['type=line'])]);
     await row('PayBar', partSrc('PayBar', PG) + ' · Pay now', [P.bar.children[0].createInstance()]);
   });
-  notes.push('Tournament confirm: built from stat.chara.id/swing/ref/tournament-confirm.html. The package card, its groups and the B3s caption are plain layers (only this screen has them); "Add a player" and "Show more" are .btn--text (CTA S text); the host\'s Swing Pass sub is gradient text via the paint style.');
+  notes.push('Tournament confirm: built from stat.chara.id/swing/ref/tournament-confirm.html. The package card, its groups and the B3s caption are plain layers (only this screen has them); "Add a player" and "Show more" are .swing_btn_text (CTA S text); the host\'s Swing Pass sub is gradient text via the paint style.');
   return { set: scr, count: 8, label: 'screen from 8 parts' };
 }
 
@@ -9925,7 +10290,7 @@ var COMPONENTS = { Color: buildColorPage, Typography: buildTypographyPage, Butto
   Toaster: buildToasterPage, Tooltip: buildTooltipPage,
   Steps: buildStepsPage, Review: buildReviewPage,
   BottomNav: buildBottomNavPage, AppBar: buildAppBarPage,
-  Card: buildCardPage, ActionCard: buildActionCardPage,
+  Card: buildCardPage, ActionCard: buildActionCardPage, FeaturedPromo: buildFeaturedPromoPage, CashbackTable: buildCashbackTablePage,
   CourseCard: buildCourseCardPage, Sheet: buildSheetPage,
   Search: buildSearchPage, DatePicker: buildDatePickerPage, TimePicker: buildTimePickerPage,
   SwingPass: buildSwingPassPage, Accordion: buildAccordionPage,
@@ -9963,9 +10328,9 @@ async function buildComponents(names) {
       try {
         var r = await COMPONENTS[names[i]](R, notes);
         built.push(names[i] + ' (' + (r.label || r.count + ' variants') + ')');
-        var pg = r.set.parent; while (pg && pg.type !== 'PAGE') pg = pg.parent;
+        var rs = firstSetOf(r.set), pg = rs.parent; while (pg && pg.type !== 'PAGE') pg = pg.parent;
         await figma.setCurrentPageAsync(pg);
-        figma.viewport.scrollAndZoomIntoView([r.set.parent && r.set.parent.type === 'FRAME' ? r.set.parent : r.set]);
+        figma.viewport.scrollAndZoomIntoView([rs.parent && rs.parent.type === 'FRAME' ? rs.parent : rs]);
       } catch (e) { errors.push(names[i] + ': ' + e.message); }
     }
   } finally { LIB = null; }
@@ -10070,17 +10435,17 @@ async function fileStatus() {
   var R = await loadRegistry(), out = { vars: Object.keys(R.vars).length, text: Object.keys(R.text).length,
     effects: Object.keys(R.effects).length, icons: { line: 0, solid: 0 }, sets: [], lib: null };
   var lk = await figma.clientStorage.getAsync('libKeys');
-  if (lk && lk.sets) out.lib = { file: lk.file, at: lk.at, sets: Object.keys(lk.sets).length, names: Object.keys(lk.sets),
+  if (lk && lk.sets) out.lib = { file: lk.file, at: lk.at, sets: Object.keys(lk.sets).length, names: Object.keys(lk.logical || {}).concat(Object.keys(lk.sets)),
     tokens: ['vars', 'text', 'effects', 'paints'].reduce(function (a, k) { return a + Object.keys(lk[k] || {}).length; }, 0) };
   for (var i = 0; i < figma.root.children.length; i++) {
     var pg = figma.root.children[i];
     var screen = /^Screen \/ /.test(pg.name);
-    if (!screen && ['Color', 'Typography', 'Icons', 'Button', 'Badge', 'Tag', 'Loading', 'Checkbox', 'Radio', 'Switch', 'Check', 'TextField', 'Select', 'Menu', 'List', 'Tabs', 'Divider', 'Avatar', 'Caption', 'Pagination', 'Rating', 'Stepper', 'Pin', 'Slider', 'Toaster', 'Tooltip', 'Steps', 'Review', 'BottomNav', 'AppBar', 'Card', 'ActionCard', 'CourseCard', 'Sheet', 'Search', 'DatePicker', 'TimePicker', 'SwingPass', 'Accordion', 'PhotoTile', 'PassUpsell', 'SectionHead', 'ProductCard', 'PromoBanner', 'HelpCard', 'LinkCard'].indexOf(pg.name) < 0) continue;
+    if (!screen && ['Color', 'Typography', 'Icons', 'Button', 'Badge', 'Tag', 'Loading', 'Checkbox', 'Radio', 'Switch', 'Check', 'TextField', 'Select', 'Menu', 'List', 'Tabs', 'Divider', 'Avatar', 'Caption', 'Pagination', 'Rating', 'Stepper', 'Pin', 'Slider', 'Toaster', 'Tooltip', 'Steps', 'Review', 'BottomNav', 'AppBar', 'Card', 'ActionCard', 'FeaturedPromo', 'CashbackTable', 'CourseCard', 'Sheet', 'Search', 'DatePicker', 'TimePicker', 'SwingPass', 'Accordion', 'PhotoTile', 'PassUpsell', 'SectionHead', 'ProductCard', 'PromoBanner', 'HelpCard', 'LinkCard'].indexOf(pg.name) < 0) continue;
     await pg.loadAsync();
     if (screen) {   // a screen counts as built when its frame is there
       var sn = pg.name.slice('Screen / '.length);
       if (pg.children.some(function (n) { return n.type === 'FRAME' && n.name === sn; })) out.sets.push('screen:' + sn);
-      pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { var b = s.name.split('/').pop(); if (UI_PARTS[b]) out.sets.push(b); });   // UI components live here (Home/ProductCard)
+      pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { var b = setTag(s).logical || s.name.split('/').pop(); if (UI_PARTS[b] && out.sets.indexOf(b) < 0) out.sets.push(b); });   // UI components live here (Home/swing_product_card)
       continue;
     }
     if (pg.name === 'Icons') {
@@ -10089,7 +10454,7 @@ async function fileStatus() {
         else if (c.name.indexOf('Icon/Solid/') === 0) out.icons.solid++;
       });
     } else {
-      pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { out.sets.push(s.name); });
+      pg.findAllWithCriteria({ types: ['COMPONENT_SET'] }).forEach(function (s) { var b = setTag(s).logical || s.name; if (out.sets.indexOf(b) < 0) out.sets.push(b); });
       pg.children.forEach(function (n) { if (n.type === 'FRAME' && (n.name === 'Color' || n.name === 'Typography') && n.children.length) out.sets.push(n.name); });   // foundation pages have artboards, not sets
     }
   }

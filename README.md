@@ -39,6 +39,8 @@ Tokens Figma has no direct slot for are adapted, not skipped:
 Add it to `networkAccess.allowedDomains` in `manifest.json`, then re-import the manifest.
 
 ## Send changes to the web (Figma → tokens.css)
+> **Currently hidden.** The section is switched off in the plugin. To turn it back on, remove `hidden` from `<div class="sec" id="syncSec" hidden>` in `ui.html` and re-import the manifest. The server side still runs.
+
 Variables edited in the DS file (ADS TESTING) can be written straight into `tokens.css`. There is no approval step: every update is backed up and can be undone.
 
 1. In the **Tokens** tab, under **Send to web**, enter your **Access key** (`sds_...`). It is kept in your own Figma.
@@ -59,29 +61,40 @@ The owner makes access keys on the sync page under **Access keys** (one per pers
 ## Components
 **Components** builds component sets on a **Components** page, bound to the imported tokens. Rebuilding matches variants by name and updates them in place, so instances stay linked.
 
+### Swing names
+Every component set is named `swing_<part>` in snake case: `swing_btn`, `swing_text_field`, `Home/swing_product_card` (the screen folder stays, it groups the Assets panel). `tone` stays a property: `swing_btn`, `swing_tag`, `swing_badge` are one set each, so you switch primary, neutral or danger right on the instance. A set with another kind property (`type`, `kind` or `control`) is split into one set per kind, named after it: `swing_text_field_password`, `swing_app_bar_home_search`. Each kind has its own artboard. The variants inside keep the kind in their name (`type=password`), so Dev Mode still says which kind it is; switch kind with instance swap.
+
+A file built while `tone` was split (`swing_btn_primary`, `swing_btn_neutral`, ...) is merged back on Update: the first tone's set is kept and renamed `swing_btn`, the other tones' variants move into it and their empty sets and artboards are removed. Placed instances stay linked; text and icon overrides on instances of the other tones may need to be set again.
+
+Updating a file built before the swing names renames and splits the sets in place: every variant stays the same node, so placed instances stay linked. After that, publish the library and run **Export library keys** again in the DS file, or a UI file still asks for the old names.
+
+Instance names in screens follow the set: `swing_btn · size=m, tone=primary, appearance=solid, state=default`.
+
+The tables below use the part names the code uses (`Button`); in Figma that part is the `swing_btn_*` sets.
+
 Names in Figma are the names in code, so a developer can read an instance and write the markup:
 
 | Figma | Code |
 |---|---|
-| `Button` · `size` xl / l / m / s / xs | `.btn--xl` / `.btn` (no class) / `.btn--m` / `.btn--s` / `.btn--xs` |
-| `tone` primary / neutral / danger / success | no class / `.btn--neutral` / `.btn--danger` / `.btn--success` |
-| `appearance` solid / soft / ghost / tertiary | no class / `.btn--soft` / `.btn--ghost` / `.btn--tertiary` |
+| `Button` · `size` xl / l / m / s / xs | `.swing_btn_xl` / `.swing_btn` (no class) / `.swing_btn_m` / `.swing_btn_s` / `.swing_btn_xs` |
+| `tone` primary / neutral / danger / success | no class / `.swing_btn_neutral` / `.swing_btn_danger` / `.swing_btn_success` |
+| `appearance` solid / soft / ghost / tertiary | no class / `.swing_btn_soft` / `.swing_btn_ghost` / `.swing_btn_tertiary` |
 | `state` pressed / disabled / loading | `:active` or `.is-pressed` / `disabled` / `aria-busy="true"` + loader |
-| `label`, `showIconStart` + `iconStart`, `showIconEnd` + `iconEnd` | button text, `<i class="icon">` before / after it |
-| `IconButton` · `icon` | `.btn.btn--icon` + `aria-label` |
-| `SlideConfirm` · `tone` primary / danger · `state` dragging / loading / disabled · `label`, `busyLabel` | `.slide-confirm`, `--danger`, `.is-dragging`, `.is-done` + `aria-busy`, `aria-disabled`, `data-busy-label` |
-| `SwingLoader` · `size` 16 / 24 / 48 / 96 | `.swing-loader`, `--24`, `--96` |
+| `label`, `showIconStart` + `iconStart`, `showIconEnd` + `iconEnd` | button text, `<i class="swing_icon">` before / after it |
+| `IconButton` · `icon` | `.swing_btn.btn--icon` + `aria-label` |
+| `SlideConfirm` · `tone` primary / danger · `state` dragging / loading / disabled · `label`, `busyLabel` | `.swing_slide_confirm`, `--danger`, `.is-dragging`, `.is-done` + `aria-busy`, `aria-disabled`, `data-busy-label` |
+| `SwingLoader` · `size` 16 / 24 / 48 / 96 | `.swing_loader`, `--24`, `--96` |
 
-- **Button** (240): all of the above, combined as the DS allows (success is solid only, tertiary is primary/neutral only). For full width (`.btn--block`), set the instance width to Fill.
+- **Button** (240): all of the above, combined as the DS allows (success is solid only, tertiary is primary/neutral only). For full width (`.swing_btn_block`), set the instance width to Fill.
 - **IconButton** (180): square, icon 24 in xl, 20 in l/m, 16 in s/xs, states default / pressed / disabled.
 - **SlideConfirm** (8): 342 wide (set the instance to Fill), dragging shown at 50%.
 - **SwingLoader** (4, page Loading): static mark; on the web it animates.
 
 Builds from before this naming are renamed in place: same components, same instances.
 
-- **Badge** (48, page Badge): `tone` neutral / primary / success / warning / danger / info / teal / pink · `appearance` soft / solid / dot · `size` m / s · `label`, `showIcon` + `icon`. Code: `.badge--{tone} .badge--{appearance} .badge--s`.
+- **Badge** (48, page Badge): `tone` neutral / primary / success / warning / danger / info / teal / pink · `appearance` soft / solid / dot · `size` m / s · `label`, `showIcon` + `icon`. Code: `.swing_badge_{tone} .swing_badge_{appearance} .swing_badge_s`.
 - **Counter** (12, `placement` inline / corner) · `tone` danger / primary / neutral · `size` 20 / 16 · `count`. **Indicator** (2): the 8px dot.
-- **Tag** (64, page Tag): `tone` neutral / primary / teal / pink / orange / green / red / on-media · `size` m / s · `state` default / pressed / selected / disabled · `label`, `showIconStart` + `iconStart`, `showCounter`, `showChevron`, `showRemove`. Code: `.tag--{tone} .tag--s`, selected = `aria-pressed="true"`. Known gap: CSS trims the side padding by 4 next to an icon; Figma cannot, so those tags are 4px wider per side.
+- **Tag** (64, page Tag): `tone` neutral / primary / teal / pink / orange / green / red / on-media · `size` m / s · `state` default / pressed / selected / disabled · `label`, `showIconStart` + `iconStart`, `showCounter`, `showChevron`, `showRemove`. Code: `.swing_tag_{tone} .swing_tag_s`, selected = `aria-pressed="true"`. Known gap: CSS trims the side padding by 4 next to an icon; Figma cannot, so those tags are 4px wider per side.
 
 All pages (one page per component group, each set on its own artboard with the code markup). Sets that the CSS composes use real instances of the smaller ones (a Card holds a Button and a Badge, a Sheet holds Option and Select rows), so changing a base component updates them.
 
@@ -115,6 +128,8 @@ All pages (one page per component group, each set on its own artboard with the c
 | AppBar | Brand 2, AppBar 16 (with type=homeSearch, and type=ads: ADS back arrow + country button) |
 | Card | Media 16, Card 4, Stat 2 |
 | ActionCard | ActionCard 24 |
+| FeaturedPromo | FeaturedPromo 2 (state default · claimed) |
+| CashbackTable | CashbackTable 2 (current regular · pass) |
 | CourseCard | CourseCard 4, CardRail 1, Carousel 1 |
 | Sheet | SheetHead 4, ShareApp 1, Sheet 5 |
 | Search | SearchRow 4, SearchBar 2, SearchPanel 2 |
@@ -129,7 +144,7 @@ Button has `size=glow` (padding 12 16 from tokens, height hugs to 44, radius 12,
 - `glow`: glass + glass line, white label, for purple, dark or photo backgrounds.
 - `glowPurple`: glass with no line, Dark 500 label, for light backgrounds.
 
-Each variant has a `glow` layer: a 1.5px ring mask with `sheen` above it (white: 320 angular; purple: 276 x 161 linear, Purple 500 0% at 25% to 100%). Disabled has no glow. On the web: `.btn--glow` / `.btn--glow.btn--glow-purple`.
+Each variant has a `glow` layer: a 1.5px ring mask with `sheen` above it (white: 320 angular; purple: 276 x 161 linear, Purple 500 0% at 25% to 100%). Disabled has no glow. On the web: `.swing_btn_glow` / `.swing_btn_glow.btn--glow-purple`.
 
 Plugins cannot write keyframes: after a build, open Motion, select `sheen`, Rotation 0 at 0 ms and -360 at 2000 ms, ease in-out, Loop. Updating Button means adding them again.
 
